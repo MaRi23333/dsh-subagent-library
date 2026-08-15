@@ -83,9 +83,11 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
     const clean: StoredEntry = { ...entry }
     if (clean.provider === '') delete clean.provider
     if (clean.model === '') delete clean.model
+    if (clean.subagentProvider === '') delete clean.subagentProvider
     if (clean.persona === '') delete clean.persona
     if (clean.description === '') delete clean.description
     if (clean.maxDepth === undefined) delete clean.maxDepth
+    if (clean.maxTokens === undefined) delete clean.maxTokens
     const filter = clean.toolFilter
     if (filter !== undefined
       && (filter.allow === undefined || filter.allow.length === 0)
@@ -104,12 +106,17 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
       setStatus({ kind: 'error', text: '深度上限需为 ≥1 的整数。' })
       return
     }
+    if (entry.maxTokens !== undefined && (!Number.isInteger(entry.maxTokens) || entry.maxTokens < 1)) {
+      setStatus({ kind: 'error', text: '输出上限需为 ≥1 的整数。' })
+      return
+    }
     // Save against the server truth, not the local snapshot: an unsaved draft
     // in another row must never be silently persisted by this row's button.
     void applyWrite({ op: 'save', entries: { ...(view?.entries ?? {}), [id]: cleanEntry(entry) }, expectedRevision: view?.revision })
   }
 
   const removeEntry = (id: string): void => {
+    if (!window.confirm(`确认删除子代理 "${id}"？该操作立即写入 settings.yaml。`)) return
     void applyWrite({ op: 'delete', id, expectedRevision: view?.revision })
   }
 
@@ -122,6 +129,10 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
     const serverEntries = view?.entries ?? {}
     if (serverEntries[id] !== undefined) {
       setStatus({ kind: 'error', text: `ID "${id}" 已存在。` })
+      return
+    }
+    if (newEntry.maxTokens !== undefined && (!Number.isInteger(newEntry.maxTokens) || newEntry.maxTokens < 1)) {
+      setStatus({ kind: 'error', text: '输出上限需为 ≥1 的整数。' })
       return
     }
     void applyWrite({ op: 'save', entries: { ...serverEntries, [id]: cleanEntry(newEntry) }, expectedRevision: view?.revision }).then((ok) => {
@@ -202,6 +213,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
                 {entry.provider || '默认路由'}/{entry.model || '默认模型'}
                 {entry.backgroundMode === 'continuable' ? ' · 可续聊' : ''}
                 {entry.maxDepth !== undefined ? ` · 深度${entry.maxDepth}` : ''}
+                {entry.maxTokens !== undefined ? ` · ${entry.maxTokens}tok` : ''}
               </span>
               <span style={{ flex: 1 }} />
               <button type="button" disabled={busy || !view.writable} onClick={() => removeEntry(id)} style={buttonStyle}>删除</button>
@@ -235,6 +247,29 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
                   onChange={(event) => setEntries({ ...entries, [id]: { ...entry, model: event.target.value } })}
                   placeholder="k3-256k"
                   style={inputStyle}
+                />
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+              <div style={colStyle}>
+                <span style={labelStyle}>传输层</span>
+                <input
+                  value={entry.subagentProvider ?? ''}
+                  onChange={(event) => setEntries({ ...entries, [id]: { ...entry, subagentProvider: event.target.value } })}
+                  placeholder="spawn（默认）"
+                  style={inputStyle}
+                />
+              </div>
+              <div style={colStyle}>
+                <span style={labelStyle}>输出上限</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={entry.maxTokens ?? ''}
+                  onChange={(event) => setEntries({ ...entries, [id]: { ...entry, maxTokens: event.target.value === '' ? undefined : Number(event.target.value) } })}
+                  placeholder="tokens"
+                  style={{ ...inputStyle, maxWidth: '110px' }}
                 />
               </div>
             </div>
@@ -328,6 +363,23 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
           <div style={colStyle}>
             <span style={labelStyle}>模型</span>
             <input value={newEntry.model ?? ''} onChange={(event) => setNewEntry({ ...newEntry, model: event.target.value })} placeholder="k3-256k" style={inputStyle} />
+          </div>
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+          <div style={colStyle}>
+            <span style={labelStyle}>传输层</span>
+            <input value={newEntry.subagentProvider ?? ''} onChange={(event) => setNewEntry({ ...newEntry, subagentProvider: event.target.value })} placeholder="spawn（默认）" style={inputStyle} />
+          </div>
+          <div style={colStyle}>
+            <span style={labelStyle}>输出上限</span>
+            <input
+              type="number"
+              min={1}
+              value={newEntry.maxTokens ?? ''}
+              onChange={(event) => setNewEntry({ ...newEntry, maxTokens: event.target.value === '' ? undefined : Number(event.target.value) })}
+              placeholder="tokens（可选）"
+              style={{ ...inputStyle, maxWidth: '110px' }}
+            />
           </div>
           <button type="button" disabled={busy || !view.writable} onClick={addEntry} style={buttonStyle}>添加</button>
         </div>

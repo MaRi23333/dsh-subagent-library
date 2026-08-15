@@ -16,9 +16,9 @@
  *
  * Delegation itself goes through the standard `ctx.subagents` seam with the
  * spawn provider (or any provider an entry names), so children keep the
- * harness' ordinary subagent semantics: delegated approval policy, inherited
- * sandbox scope, depth caps, and continuable support where the provider
- * offers it.
+ * harness' ordinary subagent semantics: approval pinned to `never` on
+ * delegation, inherited sandbox scope, depth caps, and continuable support
+ * where the provider offers it.
  *
  * @module dsh-plugin-subagent-library
  */
@@ -181,21 +181,28 @@ export function apply(ctx: Context, config: Config) {
   // editor through the plugin's own routes instead, exactly like fish-tts.
   const MAX_BODY_BYTES = 1 << 20
 
-  const readJsonBody = async (req: IncomingMessage): Promise<Record<string, unknown> | null> => {
+  /** Distinguish "over the size cap" (413) from "not valid JSON" (400). */
+  type BodyRead =
+    | { ok: true; body: Record<string, unknown> }
+    | { ok: false; error: 'too-large' | 'bad-json' }
+
+  const readJsonBody = async (req: IncomingMessage): Promise<BodyRead> => {
     const chunks: Buffer[] = []
     let size = 0
     for await (const chunk of req) {
       const buffer = chunk as Buffer
       size += buffer.length
-      if (size > MAX_BODY_BYTES) return null
+      if (size > MAX_BODY_BYTES) return { ok: false, error: 'too-large' }
       chunks.push(buffer)
     }
-    if (chunks.length === 0) return {}
+    if (chunks.length === 0) return { ok: true, body: {} }
     try {
       const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'))
-      return typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : null
+      return typeof parsed === 'object' && parsed !== null
+        ? { ok: true, body: parsed as Record<string, unknown> }
+        : { ok: false, error: 'bad-json' }
     } catch {
-      return null
+      return { ok: false, error: 'bad-json' }
     }
   }
 
@@ -277,11 +284,16 @@ export function apply(ctx: Context, config: Config) {
           return
         }
         if (!guardWrite(req, res)) return
-        const body = await readJsonBody(req)
-        if (body === null) {
-          sendJson(res, 400, { ok: false, error: 'bad-json' })
+        const read = await readJsonBody(req)
+        if (!read.ok) {
+          if (read.error === 'too-large') {
+            sendJson(res, 413, { ok: false, error: 'body-too-large' })
+          } else {
+            sendJson(res, 400, { ok: false, error: 'bad-json' })
+          }
           return
         }
+        const body = read.body
         const svc = settingsService
         const ns = settingsNs
         if (svc === undefined || ns === undefined) {

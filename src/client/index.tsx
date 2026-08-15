@@ -45,12 +45,24 @@ export type LibraryWriteResult =
   | { ok: true; view: LibraryView }
   | { ok: false; conflict?: boolean; message?: string }
 
+/** Host error codes that carry no `message`; map them to user-facing text. */
+const ERROR_TEXT: Record<string, string> = {
+  'not-ready': '设置服务尚未就绪，请稍后重试。',
+  'content-type-json-required': '请求被拒绝：写入只接受 JSON。',
+  'cross-origin-forbidden': '请求被拒绝：跨源写入。',
+  'body-too-large': '请求体超过 1 MiB 上限。',
+  'bad-json': '请求体不是合法 JSON。',
+  'entries-object-required': '缺少 entries 对象。',
+  'invalid-id': '条目 ID 非法。',
+  'unknown-op': '未知操作。',
+}
+
 async function readView(): Promise<LibraryView> {
   const response = await fetch(API_PATH, { cache: 'no-store' })
   const body: unknown = await response.json()
   if (!response.ok || typeof body !== 'object' || body === null || (body as { ok?: boolean }).ok !== true) {
     const error = (body as { error?: string } | null)?.error
-    throw new Error(error === 'not-ready' ? '设置服务尚未就绪，请稍后刷新。' : '子代理库接口不可用（插件未加载？）')
+    throw new Error((error !== undefined ? ERROR_TEXT[error] : undefined) ?? '子代理库接口不可用（插件未加载？）')
   }
   const value = body as { writable: boolean; revision: number; entries: Record<string, StoredEntry> }
   return { writable: value.writable, revision: value.revision, entries: value.entries ?? {} }
@@ -68,7 +80,8 @@ async function writeView(write: LibraryWrite): Promise<LibraryWriteResult> {
     if (response.status === 409) return { ok: false, conflict: true }
     if (!response.ok || typeof body !== 'object' || body === null || (body as { ok?: boolean }).ok !== true) {
       const message = (body as { message?: string } | null)?.message
-      return { ok: false, message: message ?? '保存失败' }
+      const error = (body as { error?: string } | null)?.error
+      return { ok: false, message: message ?? (error !== undefined ? ERROR_TEXT[error] : undefined) ?? '保存失败' }
     }
     const value = body as { writable: boolean; revision: number; entries: Record<string, StoredEntry> }
     return { ok: true, view: { writable: value.writable, revision: value.revision, entries: value.entries ?? {} } }
