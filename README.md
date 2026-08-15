@@ -66,6 +66,7 @@ dsh plugin --profile web add /absolute/path/to/dsh-plugin-subagent-library
 
 Settings → 设置 里新增「子代理库」卡片：可视化增删改条目（描述 / Provider / 模型 /
 传输层 subagentProvider / 输出上限 maxTokens / 禁用工具 / 深度 / 后台模式 / 角色提示词），写回 `$DSH_HOME/settings.yaml`，热生效。
+新增卡只收常用字段（ID / 描述 / Provider / 模型 / 传输层 / 输出上限），其余字段（禁用工具 / 深度 / 后台模式 / 角色提示词）在条目卡内编辑。
 
 ## 设计说明
 

@@ -48,6 +48,7 @@ export type LibraryWriteResult =
 /** Host error codes that carry no `message`; map them to user-facing text. */
 const ERROR_TEXT: Record<string, string> = {
   'not-ready': '设置服务尚未就绪，请稍后重试。',
+  'readonly': '设置当前为只读，无法写入。',
   'content-type-json-required': '请求被拒绝：写入只接受 JSON。',
   'cross-origin-forbidden': '请求被拒绝：跨源写入。',
   'body-too-large': '请求体超过 1 MiB 上限。',

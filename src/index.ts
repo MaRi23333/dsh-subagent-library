@@ -300,6 +300,10 @@ export function apply(ctx: Context, config: Config) {
           sendJson(res, 503, { ok: false, error: 'not-ready' })
           return
         }
+        if (!svc.writable) {
+          sendJson(res, 403, { ok: false, error: 'readonly' })
+          return
+        }
         const rawRevision = body['expectedRevision']
         const expectedRevision = typeof rawRevision === 'number' && Number.isInteger(rawRevision) ? rawRevision : undefined
         try {
@@ -498,7 +502,11 @@ export function apply(ctx: Context, config: Config) {
       // entry.provider/model are the LLM route + model (agentOptions), NOT the
       // subagent transport; the transport is `subagentProvider` (default spawn).
       const agentOptions = entry.provider !== undefined || entry.model !== undefined || entry.maxTokens !== undefined
-        ? { provider: entry.provider, model: entry.model, maxTokens: entry.maxTokens }
+        ? {
+            ...(entry.provider !== undefined ? { provider: entry.provider } : {}),
+            ...(entry.model !== undefined ? { model: entry.model } : {}),
+            ...(entry.maxTokens !== undefined ? { maxTokens: entry.maxTokens } : {}),
+          }
         : undefined
       const request: Omit<SubagentStartRequest, 'signal' | 'outputSchema'> = {
         label: args.description ?? args.library_id,

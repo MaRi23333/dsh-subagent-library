@@ -30,6 +30,11 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
   const [newEntry, setNewEntry] = useState<StoredEntry>({ description: '', provider: '', model: '', backgroundMode: 'one-shot' })
 
   const alive = useRef(true)
+  /** One-shot guard: a settings/document-updated push caused by our own
+   *  successful write is skipped, because applyWrite already merged exactly
+   *  the rows it touched — a full reload here would wipe unsaved drafts in
+   *  other rows. External pushes (other windows/tools) still reload. */
+  const skipNextPush = useRef(false)
   useEffect(() => () => { alive.current = false }, [])
 
   const load = (): void => {
@@ -47,7 +52,13 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
 
   useEffect(() => {
     load()
-    return subscribeRefresh(() => load())
+    return subscribeRefresh(() => {
+      if (skipNextPush.current) {
+        skipNextPush.current = false
+        return
+      }
+      load()
+    })
   }, [subscribeRefresh])
 
   const applyWrite = async (write: LibraryWrite): Promise<boolean> => {
@@ -57,8 +68,20 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
       const result = await writeView(write)
       if (!alive.current) return false
       if (result.ok) {
+        skipNextPush.current = true
         setView(result.view)
-        setEntries(structuredClone(result.view.entries))
+        // Merge only the rows this write touched; unsaved drafts in other
+        // rows survive (they are never persisted — save bases on
+        // view.entries, so a later save still starts from server truth).
+        setEntries((current) => {
+          const next = { ...current }
+          if (write.op === 'save') {
+            for (const [id, entry] of Object.entries(write.entries)) next[id] = structuredClone(entry)
+          } else {
+            delete next[write.id]
+          }
+          return next
+        })
         setStatus({ kind: 'ok', text: '已保存' })
         return true
       }
@@ -122,7 +145,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
 
   const addEntry = (): void => {
     const id = newId.trim()
-    if (!/^[a-z0-9][a-z0-9-]*$/.test(id) || !newEntry.description) {
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(id) || (newEntry.description ?? '').trim() === '') {
       setStatus({ kind: 'error', text: 'ID 需为小写字母/数字/连字符，且必须有描述。' })
       return
     }
