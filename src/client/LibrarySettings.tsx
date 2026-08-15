@@ -80,9 +80,9 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
       const result = await writeView(write)
       if (!alive.current) return false
       pendingSelfWrite.current = false
+      const skipped = skippedWhilePending.current
+      skippedWhilePending.current = null
       if (result.ok) {
-        const skipped = skippedWhilePending.current
-        skippedWhilePending.current = null
         lastCommitted.current = result.view.revision
         setView(result.view)
         // Merge only the row this write touched (fresh server value);
@@ -106,6 +106,11 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
         setStatus({ kind: 'error', text: '配置已被其他窗口修改，已重新加载，请重试。' })
         load()
       } else {
+        // A push skipped while the failed write was in flight may have
+        // carried a newer external change; our write did not advance the
+        // revision, so reload when that skipped change is beyond what we
+        // last committed.
+        if (skipped !== null && lastCommitted.current !== null && skipped > lastCommitted.current) load()
         setStatus({ kind: 'error', text: result.message ?? '保存失败' })
       }
       return false
