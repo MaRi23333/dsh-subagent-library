@@ -1,0 +1,311 @@
+/**
+ * Settings section: edit the subagent library document through the plugin's
+ * own host routes. A `settings-conflict` (409) reloads instead of clobbering
+ * a concurrent change.
+ */
+import { useEffect, useRef, useState } from 'react'
+import type { InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
+import type { LibraryView, LibraryWrite, LibraryWriteResult, StoredEntry } from './index.tsx'
+
+export interface LibrarySettingsInjected {
+  readView: () => Promise<LibraryView>
+  writeView: (write: LibraryWrite) => Promise<LibraryWriteResult>
+  /** Re-run the loader on any pushed `settings/document-updated` for this namespace. */
+  subscribeRefresh: (fn: () => void) => () => void
+}
+
+export type LibrarySettingsProps =
+  PropsRuntime<'settings.section'>
+  & InjectFace<LibrarySettingsInjected>
+
+export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement {
+  const { readView, writeView, subscribeRefresh } = props
+
+  const [view, setView] = useState<LibraryView | null>(null)
+  const [entries, setEntries] = useState<Record<string, StoredEntry>>({})
+  const [busy, setBusy] = useState(false)
+  const [status, setStatus] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
+  const [newId, setNewId] = useState('')
+  const [newEntry, setNewEntry] = useState<StoredEntry>({ description: '', provider: '', model: '', backgroundMode: 'one-shot' })
+
+  const alive = useRef(true)
+  useEffect(() => () => { alive.current = false }, [])
+
+  const load = (): void => {
+    void (async () => {
+      try {
+        const next = await readView()
+        if (!alive.current) return
+        setView(next)
+        setEntries(structuredClone(next.entries))
+      } catch (error) {
+        if (alive.current) setStatus({ kind: 'error', text: String(error) })
+      }
+    })()
+  }
+
+  useEffect(() => {
+    load()
+    return subscribeRefresh(() => load())
+  }, [subscribeRefresh])
+
+  const applyWrite = async (write: LibraryWrite): Promise<boolean> => {
+    setBusy(true)
+    setStatus(null)
+    try {
+      const result = await writeView(write)
+      if (!alive.current) return false
+      if (result.ok) {
+        setView(result.view)
+        setEntries(structuredClone(result.view.entries))
+        setStatus({ kind: 'ok', text: '已保存' })
+        return true
+      }
+      if (result.conflict) {
+        setStatus({ kind: 'error', text: '配置已被其他窗口修改，已重新加载，请重试。' })
+        load()
+      } else {
+        setStatus({ kind: 'error', text: result.message ?? '保存失败' })
+      }
+      return false
+    } finally {
+      if (alive.current) setBusy(false)
+    }
+  }
+
+  const updateEntry = (id: string, entry: StoredEntry): void => {
+    if ((entry.description ?? '').trim() === '') {
+      setStatus({ kind: 'error', text: '描述不能为空。' })
+      return
+    }
+    if (entry.maxDepth !== undefined && entry.maxDepth < 1) {
+      setStatus({ kind: 'error', text: '深度上限最小为 1。' })
+      return
+    }
+    const clean: StoredEntry = { ...entry }
+    if (clean.provider === '') delete clean.provider
+    if (clean.model === '') delete clean.model
+    if (clean.persona === '') delete clean.persona
+    if (clean.description === '') delete clean.description
+    if (clean.maxDepth === undefined) delete clean.maxDepth
+    if (clean.toolFilter !== undefined && (clean.toolFilter.deny === undefined || clean.toolFilter.deny.length === 0)) delete clean.toolFilter
+    void applyWrite({ op: 'save', entries: { ...entries, [id]: clean }, expectedRevision: view?.revision })
+  }
+
+  const removeEntry = (id: string): void => {
+    const next = { ...entries }
+    delete next[id]
+    void applyWrite({ op: 'save', entries: next, expectedRevision: view?.revision })
+  }
+
+  const addEntry = (): void => {
+    const id = newId.trim()
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(id) || !newEntry.description) {
+      setStatus({ kind: 'error', text: 'ID 需为小写字母/数字/连字符，且必须有描述。' })
+      return
+    }
+    if (entries[id] !== undefined) {
+      setStatus({ kind: 'error', text: `ID "${id}" 已存在。` })
+      return
+    }
+    void applyWrite({ op: 'save', entries: { ...entries, [id]: { ...newEntry } }, expectedRevision: view?.revision }).then((ok) => {
+      if (alive.current && ok) {
+        setNewId('')
+        setNewEntry({ description: '', provider: '', model: '', backgroundMode: 'one-shot' })
+      }
+    })
+  }
+
+  const rowStyle = { display: 'flex', alignItems: 'center', gap: '8px' } as const
+  const labelStyle = { fontSize: '13px', opacity: 0.85, minWidth: '72px' } as const
+  const inputStyle = {
+    flex: 1,
+    fontSize: '13px',
+    fontFamily: 'monospace',
+    padding: '4px 8px',
+    border: '1px solid var(--dsh-color-border, #3a3f4b)',
+    borderRadius: '4px',
+    background: 'transparent',
+    color: 'inherit',
+  } as const
+  const buttonStyle = {
+    padding: '3px 12px',
+    fontSize: '12px',
+    cursor: 'pointer',
+    opacity: busy ? 0.55 : 1,
+  } as const
+  const cardStyle = {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '6px',
+    padding: '10px 12px',
+    border: '1px solid var(--dsh-color-border, #3a3f4b)',
+    borderRadius: '6px',
+  } as const
+  const hintStyle = { fontSize: '11px', opacity: 0.6, marginTop: '2px' } as const
+
+  if (view === null) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px 4px' }}>
+        <div style={{ fontSize: '15px', fontWeight: 600 }}>子代理库</div>
+        <div style={{ fontSize: '13px', opacity: 0.8 }}>正在加载…（若长时间无响应，请刷新页面或检查插件是否加载）</div>
+      </div>
+    )
+  }
+
+  const ids = Object.keys(entries)
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', padding: '12px 4px', maxWidth: '720px' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <div style={{ fontSize: '15px', fontWeight: 600 }}>子代理库</div>
+          <button type="button" onClick={load} style={{ ...buttonStyle, opacity: 0.7 }}>刷新</button>
+        </div>
+        <span style={hintStyle}>管理具名角色子代理。保存后热生效：模型可在任意会话通过 list_subagents / delegate 使用。</span>
+      </div>
+
+      {!view.writable && <div style={{ fontSize: '12px', opacity: 0.7 }}>（当前设置只读）</div>}
+
+      {ids.length === 0 && (
+        <div style={{ fontSize: '13px', opacity: 0.8 }}>库为空。添加第一个条目开始使用。</div>
+      )}
+
+      {ids.map((id) => {
+        const entry = entries[id]
+        return (
+          <div key={id} style={cardStyle}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <span style={{ fontSize: '13px', fontWeight: 600, fontFamily: 'monospace' }}>{id}</span>
+              <span style={{ fontSize: '11px', opacity: 0.7 }}>
+                {entry.provider || '默认路由'}/{entry.model || '默认模型'}
+                {entry.backgroundMode === 'continuable' ? ' · 可续聊' : ''}
+                {entry.maxDepth !== undefined ? ` · 深度${entry.maxDepth}` : ''}
+              </span>
+              <span style={{ flex: 1 }} />
+              <button type="button" disabled={busy} onClick={() => removeEntry(id)} style={buttonStyle}>删除</button>
+              <button type="button" disabled={busy} onClick={() => updateEntry(id, entry)} style={buttonStyle}>保存</button>
+            </div>
+
+            <div style={rowStyle}>
+              <span style={labelStyle}>描述</span>
+              <input
+                value={entry.description ?? ''}
+                onChange={(event) => setEntries({ ...entries, [id]: { ...entry, description: event.target.value } })}
+                placeholder="角色描述（模型可见）"
+                style={inputStyle}
+              />
+            </div>
+
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <div style={{ ...rowStyle, flex: 1 }}>
+                <span style={labelStyle}>Provider</span>
+                <input
+                  value={entry.provider ?? ''}
+                  onChange={(event) => setEntries({ ...entries, [id]: { ...entry, provider: event.target.value } })}
+                  placeholder="deepseek-official / kimi-coding"
+                  style={inputStyle}
+                />
+              </div>
+              <div style={{ ...rowStyle, flex: 1 }}>
+                <span style={labelStyle}>模型</span>
+                <input
+                  value={entry.model ?? ''}
+                  onChange={(event) => setEntries({ ...entries, [id]: { ...entry, model: event.target.value } })}
+                  placeholder="k3-256k"
+                  style={inputStyle}
+                />
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <div style={{ ...rowStyle, flex: 1 }}>
+                <span style={labelStyle}>深度上限</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={entry.maxDepth ?? ''}
+                  onChange={(event) => setEntries({ ...entries, [id]: { ...entry, maxDepth: event.target.value === '' ? undefined : Number(event.target.value) } })}
+                  style={{ ...inputStyle, maxWidth: '80px' }}
+                />
+              </div>
+              <div style={{ ...rowStyle, flex: 1 }}>
+                <span style={labelStyle}>后台模式</span>
+                <select
+                  value={entry.backgroundMode ?? 'one-shot'}
+                  onChange={(event) => setEntries({ ...entries, [id]: { ...entry, backgroundMode: event.target.value as 'one-shot' | 'continuable' } })}
+                  style={{ ...inputStyle, maxWidth: '140px' }}
+                >
+                  <option value="one-shot">one-shot</option>
+                  <option value="continuable">continuable</option>
+                </select>
+              </div>
+              <div style={{ ...rowStyle, flex: 2 }}>
+                <span style={labelStyle}>禁用工具</span>
+                <input
+                  value={(entry.toolFilter?.deny ?? []).join(', ')}
+                  onChange={(event) => {
+                    const deny = event.target.value.split(',').map((item) => item.trim()).filter(Boolean)
+                    setEntries({ ...entries, [id]: { ...entry, toolFilter: deny.length ? { deny } : undefined } })
+                  }}
+                  placeholder="write, edit, todo_write, …"
+                  style={inputStyle}
+                />
+              </div>
+            </div>
+
+            <div style={rowStyle}>
+              <span style={labelStyle}>角色提示词</span>
+              <textarea
+                value={entry.persona ?? ''}
+                onChange={(event) => setEntries({ ...entries, [id]: { ...entry, persona: event.target.value } })}
+                placeholder="子代理的系统提示词（可选）"
+                rows={3}
+                style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit' }}
+              />
+            </div>
+          </div>
+        )
+      })}
+
+      <div style={cardStyle}>
+        <div style={{ fontSize: '13px', fontWeight: 600 }}>新增子代理</div>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <div style={{ ...rowStyle, flex: 1 }}>
+            <span style={labelStyle}>ID</span>
+            <input value={newId} onChange={(event) => setNewId(event.target.value)} placeholder="k3-reviewer" style={{ ...inputStyle, maxWidth: '160px' }} />
+          </div>
+          <div style={{ ...rowStyle, flex: 2 }}>
+            <span style={labelStyle}>描述</span>
+            <input
+              value={newEntry.description ?? ''}
+              onChange={(event) => setNewEntry({ ...newEntry, description: event.target.value })}
+              placeholder="角色描述（模型可见）"
+              style={inputStyle}
+            />
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <div style={{ ...rowStyle, flex: 1 }}>
+            <span style={labelStyle}>Provider</span>
+            <input value={newEntry.provider ?? ''} onChange={(event) => setNewEntry({ ...newEntry, provider: event.target.value })} placeholder="kimi-coding" style={inputStyle} />
+          </div>
+          <div style={{ ...rowStyle, flex: 1 }}>
+            <span style={labelStyle}>模型</span>
+            <input value={newEntry.model ?? ''} onChange={(event) => setNewEntry({ ...newEntry, model: event.target.value })} placeholder="k3-256k" style={inputStyle} />
+          </div>
+          <button type="button" disabled={busy} onClick={addEntry} style={buttonStyle}>添加</button>
+        </div>
+      </div>
+
+      {status !== null && (
+        <div style={{ fontSize: '12px', color: status.kind === 'ok' ? 'var(--dsh-color-success, #30a46c)' : 'var(--dsh-color-danger, #e5484d)' }}>
+          {status.text}
+        </div>
+      )}
+
+      <div style={{ fontSize: '11px', opacity: 0.55, paddingTop: '4px' }}>配置存储于 $DSH_HOME/settings.yaml 的 subagent-library.entries。</div>
+    </div>
+  )
+}

@@ -1,0 +1,6 @@
+node_modules/
+*.log
+.DS_Store
+*.tmp
+# 交接文档含本机路径与审查记录，绝不随公开仓库发布（lib/ 需提交入库，勿忽略）
+HANDOFF.md

@@ -1,0 +1,112 @@
+/**
+ * dsh-plugin-subagent-library — browser half.
+ *
+ * A Settings section card ("子代理库") that reads and edits the
+ * `subagent-library` settings namespace through the plugin's own host routes
+ * (`/subagent-library/api`). The standard `api.settings.*` wire face cannot
+ * serve a third-party namespace in this harness build (the gateway only
+ * exposes its own allowlist), so the editor talks to the host directly,
+ * exactly like dsh-plugin-fish-tts does.
+ */
+import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
+import type {} from '@deepseek-ai/dsh-client-locale/client'
+import type {} from '@deepseek-ai/dsh-api-remotes/client'
+import { LibrarySettings, type LibrarySettingsInjected } from './LibrarySettings.tsx'
+import { en, zh } from './locales.ts'
+
+const NS = 'subagent-library'
+const API_PATH = '/subagent-library/api'
+
+/** Wire view of one library entry as stored in the settings document. */
+export interface StoredEntry {
+  description?: string
+  provider?: string
+  model?: string
+  subagentProvider?: string
+  maxTokens?: number
+  persona?: string
+  toolFilter?: { allow?: string[]; deny?: string[] }
+  maxDepth?: number
+  backgroundMode?: 'one-shot' | 'continuable'
+}
+
+export interface LibraryView {
+  writable: boolean
+  revision: number
+  entries: Record<string, StoredEntry>
+}
+
+export type LibraryWrite =
+  | { op: 'save'; entries: Record<string, StoredEntry>; expectedRevision?: number }
+  | { op: 'delete'; id: string; expectedRevision?: number }
+
+export type LibraryWriteResult =
+  | { ok: true; view: LibraryView }
+  | { ok: false; conflict?: boolean; message?: string }
+
+async function readView(): Promise<LibraryView> {
+  const response = await fetch(API_PATH, { cache: 'no-store' })
+  const body: unknown = await response.json()
+  if (!response.ok || typeof body !== 'object' || body === null || (body as { ok?: boolean }).ok !== true) {
+    throw new Error('子代理库接口不可用（插件未加载？）')
+  }
+  const value = body as { writable: boolean; revision: number; entries: Record<string, StoredEntry> }
+  return { writable: value.writable, revision: value.revision, entries: value.entries ?? {} }
+}
+
+async function writeView(write: LibraryWrite): Promise<LibraryWriteResult> {
+  try {
+    const response = await fetch(API_PATH, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(write),
+      cache: 'no-store',
+    })
+    const body: unknown = await response.json()
+    if (response.status === 409) return { ok: false, conflict: true }
+    if (!response.ok || typeof body !== 'object' || body === null || (body as { ok?: boolean }).ok !== true) {
+      const message = (body as { message?: string } | null)?.message
+      return { ok: false, message: message ?? '保存失败' }
+    }
+    const value = body as { writable: boolean; revision: number; entries: Record<string, StoredEntry> }
+    return { ok: true, view: { writable: value.writable, revision: value.revision, entries: value.entries ?? {} } }
+  } catch (error) {
+    return { ok: false, message: String(error) }
+  }
+}
+
+export const inject = ['slots', 'locale', 'remote']
+
+export function apply(ctx: ClientContext): void {
+  ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'subagent-library: dictionaries')
+
+  // Pushed invalidation: any committed change to the subagent-library
+  // namespace re-reads the document.
+  const listeners = new Set<() => void>()
+  const subscribeRefresh = (fn: () => void): (() => void) => {
+    listeners.add(fn)
+    return () => { listeners.delete(fn) }
+  }
+  const refresh = (): void => {
+    for (const fn of listeners) {
+      try {
+        fn()
+      } catch {
+        // one stale subscriber must not break the others
+      }
+    }
+  }
+  ctx.effect(() => ctx.remote.$on('settings/document-updated', (ns: string) => {
+    if (ns === NS) refresh()
+  }), 'subagent-library: settings invalidation')
+
+  // ── settings section card ──────────────────────────────────────────────────
+  ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section',
+    id: NS,
+    order: 40,
+    label: () => '子代理库',
+    inject: (): LibrarySettingsInjected => ({ readView, writeView, subscribeRefresh }),
+  }, LibrarySettings))
+}

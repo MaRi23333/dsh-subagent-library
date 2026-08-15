@@ -1,0 +1,7 @@
+# dsh-plugin-subagent-library bundle patch: insert the host row into the
+# composition. The row id must be unique; `name` must equal the package name.
+# The row lives on the HOST plane, so its list_subagents / delegate tools are
+# visible to every session regardless of agent preset.
+- insert:
+    - id: subagent-library
+      name: dsh-plugin-subagent-library
