@@ -11,8 +11,9 @@ import type { LibraryView, LibraryWrite, LibraryWriteResult, StoredEntry } from 
 export interface LibrarySettingsInjected {
   readView: () => Promise<LibraryView>
   writeView: (write: LibraryWrite) => Promise<LibraryWriteResult>
-  /** Re-run the loader on any pushed `settings/document-updated` for this namespace. */
-  subscribeRefresh: (fn: () => void) => () => void
+  /** Re-run the loader on any pushed `settings/document-updated` for this
+   *  namespace; the push's revision lets the section skip its own echo. */
+  subscribeRefresh: (fn: (revision?: number) => void) => () => void
 }
 
 export type LibrarySettingsProps =
@@ -30,18 +31,27 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
   const [newEntry, setNewEntry] = useState<StoredEntry>({ description: '', provider: '', model: '', backgroundMode: 'one-shot' })
 
   const alive = useRef(true)
-  /** One-shot guard: a settings/document-updated push caused by our own
-   *  successful write is skipped, because applyWrite already merged exactly
-   *  the rows it touched — a full reload here would wipe unsaved drafts in
-   *  other rows. External pushes (other windows/tools) still reload. */
-  const skipNextPush = useRef(false)
   useEffect(() => () => { alive.current = false }, [])
+
+  /** Revision of the last committed server state (successful write or load).
+   *  document-updated pushes at or below it are our own write's echo and are
+   *  skipped — applyWrite already merged the touched row, and a full reload
+   *  here would wipe unsaved drafts in other rows. External pushes (higher
+   *  revisions) still reload. */
+  const lastCommitted = useRef<number | null>(null)
+  /** True while a write request is in flight: the push and the HTTP response
+   *  travel on independent channels, so a push may arrive before the response
+   *  commits our state. Everything in this window is skipped and the newest
+   *  skipped revision is re-checked after the response. */
+  const pendingSelfWrite = useRef(false)
+  const skippedWhilePending = useRef<number | null>(null)
 
   const load = (): void => {
     void (async () => {
       try {
         const next = await readView()
         if (!alive.current) return
+        lastCommitted.current = next.revision
         setView(next)
         setEntries(structuredClone(next.entries))
       } catch (error) {
@@ -52,39 +62,46 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
 
   useEffect(() => {
     load()
-    return subscribeRefresh(() => {
-      if (skipNextPush.current) {
-        skipNextPush.current = false
+    return subscribeRefresh((revision) => {
+      if (pendingSelfWrite.current) {
+        if (revision !== undefined) skippedWhilePending.current = Math.max(skippedWhilePending.current ?? -1, revision)
         return
       }
+      if (revision !== undefined && lastCommitted.current !== null && revision <= lastCommitted.current) return
       load()
     })
   }, [subscribeRefresh])
 
-  const applyWrite = async (write: LibraryWrite): Promise<boolean> => {
+  const applyWrite = async (write: LibraryWrite, touchedId: string): Promise<boolean> => {
     setBusy(true)
     setStatus(null)
+    pendingSelfWrite.current = true
     try {
       const result = await writeView(write)
       if (!alive.current) return false
+      pendingSelfWrite.current = false
       if (result.ok) {
-        skipNextPush.current = true
+        const skipped = skippedWhilePending.current
+        skippedWhilePending.current = null
+        lastCommitted.current = result.view.revision
         setView(result.view)
-        // Merge only the rows this write touched; unsaved drafts in other
-        // rows survive (they are never persisted — save bases on
-        // view.entries, so a later save still starts from server truth).
+        // Merge only the row this write touched (fresh server value);
+        // unsaved drafts in other rows survive — they are never persisted,
+        // because save bases on view.entries.
         setEntries((current) => {
           const next = { ...current }
-          if (write.op === 'save') {
-            for (const [id, entry] of Object.entries(write.entries)) next[id] = structuredClone(entry)
-          } else {
-            delete next[write.id]
-          }
+          const fresh = result.view.entries[touchedId]
+          if (fresh !== undefined) next[touchedId] = structuredClone(fresh)
+          else delete next[touchedId]
           return next
         })
         setStatus({ kind: 'ok', text: '已保存' })
+        // A push skipped while the write was in flight may have carried a
+        // newer external change; reload to pick it up.
+        if (skipped !== null && skipped > result.view.revision) load()
         return true
       }
+      skippedWhilePending.current = null
       if (result.conflict) {
         setStatus({ kind: 'error', text: '配置已被其他窗口修改，已重新加载，请重试。' })
         load()
@@ -93,6 +110,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
       }
       return false
     } finally {
+      pendingSelfWrite.current = false
       if (alive.current) setBusy(false)
     }
   }
@@ -135,12 +153,12 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
     }
     // Save against the server truth, not the local snapshot: an unsaved draft
     // in another row must never be silently persisted by this row's button.
-    void applyWrite({ op: 'save', entries: { ...(view?.entries ?? {}), [id]: cleanEntry(entry) }, expectedRevision: view?.revision })
+    void applyWrite({ op: 'save', entries: { ...(view?.entries ?? {}), [id]: cleanEntry(entry) }, expectedRevision: view?.revision }, id)
   }
 
   const removeEntry = (id: string): void => {
     if (!window.confirm(`确认删除子代理 "${id}"？该操作立即写入 settings.yaml。`)) return
-    void applyWrite({ op: 'delete', id, expectedRevision: view?.revision })
+    void applyWrite({ op: 'delete', id, expectedRevision: view?.revision }, id)
   }
 
   const addEntry = (): void => {
@@ -158,7 +176,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
       setStatus({ kind: 'error', text: '输出上限需为 ≥1 的整数。' })
       return
     }
-    void applyWrite({ op: 'save', entries: { ...serverEntries, [id]: cleanEntry(newEntry) }, expectedRevision: view?.revision }).then((ok) => {
+    void applyWrite({ op: 'save', entries: { ...serverEntries, [id]: cleanEntry(newEntry) }, expectedRevision: view?.revision }, id).then((ok) => {
       if (alive.current && ok) {
         setNewId('')
         setNewEntry({ description: '', provider: '', model: '', backgroundMode: 'one-shot' })

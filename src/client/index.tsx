@@ -97,23 +97,25 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'subagent-library: dictionaries')
 
   // Pushed invalidation: any committed change to the subagent-library
-  // namespace re-reads the document.
-  const listeners = new Set<() => void>()
-  const subscribeRefresh = (fn: () => void): (() => void) => {
+  // namespace re-reads the document. The push carries the new revision so a
+  // subscriber can tell its own write's echo (≤ last committed) from an
+  // external change without racing the write response.
+  const listeners = new Set<(revision?: number) => void>()
+  const subscribeRefresh = (fn: (revision?: number) => void): (() => void) => {
     listeners.add(fn)
     return () => { listeners.delete(fn) }
   }
-  const refresh = (): void => {
+  const refresh = (revision?: number): void => {
     for (const fn of listeners) {
       try {
-        fn()
+        fn(revision)
       } catch {
         // one stale subscriber must not break the others
       }
     }
   }
-  ctx.effect(() => ctx.remote.$on('settings/document-updated', (ns: string) => {
-    if (ns === NS) refresh()
+  ctx.effect(() => ctx.remote.$on('settings/document-updated', (ns: string, revision?: number) => {
+    if (ns === NS) refresh(revision)
   }), 'subagent-library: settings invalidation')
 
   // ── settings section card ──────────────────────────────────────────────────
