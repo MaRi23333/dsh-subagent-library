@@ -303,7 +303,15 @@ export function apply(ctx: Context, config: Config) {
             }
             // Validate against the plugin schema before persisting.
             Config({ ...config, entries: candidate as Record<string, Entry> })
-            await svc.update(ns, { entries: candidate }, expectedRevision)
+            // Wholesale-replace the `entries` map: the editor sends a COMPLETE
+            // snapshot (fields the user cleared are absent, which is exactly
+            // how a removal is expressed), while settings `update` deep-merges
+            // and can never remove keys the patch dropped. Other top-level
+            // user keys (e.g. subagentProvider) are preserved by spreading the
+            // current raw section underneath.
+            const saveDescriptor = svc.describe().find((row) => row.ns === ns)
+            const userSection = (saveDescriptor?.user ?? {}) as Record<string, unknown>
+            await svc.replace(ns, { ...userSection, entries: candidate }, expectedRevision)
           } else {
             sendJson(res, 400, { ok: false, error: 'unknown-op' })
             return
