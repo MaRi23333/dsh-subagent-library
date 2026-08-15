@@ -118,9 +118,14 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
   }
 
   const rowStyle = { display: 'flex', alignItems: 'center', gap: '8px' } as const
+  /** Shrinkable multi-column row: min-width 0 lets inputs shrink below their
+   *  intrinsic width instead of overflowing the settings card (form controls
+   *  otherwise keep their default width as a flex minimum). */
+  const colStyle = { ...rowStyle, flex: 1, minWidth: 0 } as const
   const labelStyle = { fontSize: '13px', opacity: 0.85, minWidth: '72px' } as const
   const inputStyle = {
     flex: 1,
+    minWidth: 0,
     fontSize: '13px',
     fontFamily: 'monospace',
     padding: '4px 8px',
@@ -198,8 +203,8 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
               />
             </div>
 
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <div style={{ ...rowStyle, flex: 1 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+              <div style={colStyle}>
                 <span style={labelStyle}>Provider</span>
                 <input
                   value={entry.provider ?? ''}
@@ -208,7 +213,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
                   style={inputStyle}
                 />
               </div>
-              <div style={{ ...rowStyle, flex: 1 }}>
+              <div style={colStyle}>
                 <span style={labelStyle}>模型</span>
                 <input
                   value={entry.model ?? ''}
@@ -219,8 +224,8 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
               </div>
             </div>
 
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <div style={{ ...rowStyle, flex: 1 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+              <div style={colStyle}>
                 <span style={labelStyle}>深度上限</span>
                 <input
                   type="number"
@@ -230,7 +235,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
                   style={{ ...inputStyle, maxWidth: '80px' }}
                 />
               </div>
-              <div style={{ ...rowStyle, flex: 1 }}>
+              <div style={colStyle}>
                 <span style={labelStyle}>后台模式</span>
                 <select
                   value={entry.backgroundMode ?? 'one-shot'}
@@ -241,7 +246,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
                   <option value="continuable">continuable</option>
                 </select>
               </div>
-              <div style={{ ...rowStyle, flex: 2 }}>
+              <div style={{ ...colStyle, flex: 2 }}>
                 <span style={labelStyle}>禁用工具</span>
                 <input
                   value={(entry.toolFilter?.deny ?? []).join(', ')}
@@ -271,12 +276,12 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
 
       <div style={cardStyle}>
         <div style={{ fontSize: '13px', fontWeight: 600 }}>新增子代理</div>
-        <div style={{ display: 'flex', gap: '8px' }}>
-          <div style={{ ...rowStyle, flex: 1 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+          <div style={colStyle}>
             <span style={labelStyle}>ID</span>
             <input value={newId} onChange={(event) => setNewId(event.target.value)} placeholder="k3-reviewer" style={{ ...inputStyle, maxWidth: '160px' }} />
           </div>
-          <div style={{ ...rowStyle, flex: 2 }}>
+          <div style={{ ...colStyle, flex: 2 }}>
             <span style={labelStyle}>描述</span>
             <input
               value={newEntry.description ?? ''}
@@ -286,12 +291,12 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
             />
           </div>
         </div>
-        <div style={{ display: 'flex', gap: '8px' }}>
-          <div style={{ ...rowStyle, flex: 1 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+          <div style={colStyle}>
             <span style={labelStyle}>Provider</span>
             <input value={newEntry.provider ?? ''} onChange={(event) => setNewEntry({ ...newEntry, provider: event.target.value })} placeholder="kimi-coding" style={inputStyle} />
           </div>
-          <div style={{ ...rowStyle, flex: 1 }}>
+          <div style={colStyle}>
             <span style={labelStyle}>模型</span>
             <input value={newEntry.model ?? ''} onChange={(event) => setNewEntry({ ...newEntry, model: event.target.value })} placeholder="k3-256k" style={inputStyle} />
           </div>
