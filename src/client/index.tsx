@@ -49,7 +49,8 @@ async function readView(): Promise<LibraryView> {
   const response = await fetch(API_PATH, { cache: 'no-store' })
   const body: unknown = await response.json()
   if (!response.ok || typeof body !== 'object' || body === null || (body as { ok?: boolean }).ok !== true) {
-    throw new Error('子代理库接口不可用（插件未加载？）')
+    const error = (body as { error?: string } | null)?.error
+    throw new Error(error === 'not-ready' ? '设置服务尚未就绪，请稍后刷新。' : '子代理库接口不可用（插件未加载？）')
   }
   const value = body as { writable: boolean; revision: number; entries: Record<string, StoredEntry> }
   return { writable: value.writable, revision: value.revision, entries: value.entries ?? {} }

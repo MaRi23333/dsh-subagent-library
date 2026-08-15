@@ -74,29 +74,43 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
     }
   }
 
-  const updateEntry = (id: string, entry: StoredEntry): void => {
-    if ((entry.description ?? '').trim() === '') {
-      setStatus({ kind: 'error', text: '描述不能为空。' })
-      return
-    }
-    if (entry.maxDepth !== undefined && entry.maxDepth < 1) {
-      setStatus({ kind: 'error', text: '深度上限最小为 1。' })
-      return
-    }
+  /** Normalize one entry for persistence: empty optional fields are dropped
+   *  (they then fall back to their defaults instead of being stored as '' or
+   *  stale values), and toolFilter survives only while it still scopes
+   *  something — an allow list alone must NOT be deleted by an editor that
+   *  only shows deny. */
+  const cleanEntry = (entry: StoredEntry): StoredEntry => {
     const clean: StoredEntry = { ...entry }
     if (clean.provider === '') delete clean.provider
     if (clean.model === '') delete clean.model
     if (clean.persona === '') delete clean.persona
     if (clean.description === '') delete clean.description
     if (clean.maxDepth === undefined) delete clean.maxDepth
-    if (clean.toolFilter !== undefined && (clean.toolFilter.deny === undefined || clean.toolFilter.deny.length === 0)) delete clean.toolFilter
-    void applyWrite({ op: 'save', entries: { ...entries, [id]: clean }, expectedRevision: view?.revision })
+    const filter = clean.toolFilter
+    if (filter !== undefined
+      && (filter.allow === undefined || filter.allow.length === 0)
+      && (filter.deny === undefined || filter.deny.length === 0)) {
+      delete clean.toolFilter
+    }
+    return clean
+  }
+
+  const updateEntry = (id: string, entry: StoredEntry): void => {
+    if ((entry.description ?? '').trim() === '') {
+      setStatus({ kind: 'error', text: '描述不能为空。' })
+      return
+    }
+    if (entry.maxDepth !== undefined && (!Number.isInteger(entry.maxDepth) || entry.maxDepth < 1)) {
+      setStatus({ kind: 'error', text: '深度上限需为 ≥1 的整数。' })
+      return
+    }
+    // Save against the server truth, not the local snapshot: an unsaved draft
+    // in another row must never be silently persisted by this row's button.
+    void applyWrite({ op: 'save', entries: { ...(view?.entries ?? {}), [id]: cleanEntry(entry) }, expectedRevision: view?.revision })
   }
 
   const removeEntry = (id: string): void => {
-    const next = { ...entries }
-    delete next[id]
-    void applyWrite({ op: 'save', entries: next, expectedRevision: view?.revision })
+    void applyWrite({ op: 'delete', id, expectedRevision: view?.revision })
   }
 
   const addEntry = (): void => {
@@ -105,11 +119,12 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
       setStatus({ kind: 'error', text: 'ID 需为小写字母/数字/连字符，且必须有描述。' })
       return
     }
-    if (entries[id] !== undefined) {
+    const serverEntries = view?.entries ?? {}
+    if (serverEntries[id] !== undefined) {
       setStatus({ kind: 'error', text: `ID "${id}" 已存在。` })
       return
     }
-    void applyWrite({ op: 'save', entries: { ...entries, [id]: { ...newEntry } }, expectedRevision: view?.revision }).then((ok) => {
+    void applyWrite({ op: 'save', entries: { ...serverEntries, [id]: cleanEntry(newEntry) }, expectedRevision: view?.revision }).then((ok) => {
       if (alive.current && ok) {
         setNewId('')
         setNewEntry({ description: '', provider: '', model: '', backgroundMode: 'one-shot' })
@@ -189,8 +204,8 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
                 {entry.maxDepth !== undefined ? ` · 深度${entry.maxDepth}` : ''}
               </span>
               <span style={{ flex: 1 }} />
-              <button type="button" disabled={busy} onClick={() => removeEntry(id)} style={buttonStyle}>删除</button>
-              <button type="button" disabled={busy} onClick={() => updateEntry(id, entry)} style={buttonStyle}>保存</button>
+              <button type="button" disabled={busy || !view.writable} onClick={() => removeEntry(id)} style={buttonStyle}>删除</button>
+              <button type="button" disabled={busy || !view.writable} onClick={() => updateEntry(id, entry)} style={buttonStyle}>保存</button>
             </div>
 
             <div style={rowStyle}>
@@ -252,7 +267,21 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
                   value={(entry.toolFilter?.deny ?? []).join(', ')}
                   onChange={(event) => {
                     const deny = event.target.value.split(',').map((item) => item.trim()).filter(Boolean)
-                    setEntries({ ...entries, [id]: { ...entry, toolFilter: deny.length ? { deny } : undefined } })
+                    // The editor only shows deny; a hand-written allow list is
+                    // preserved so an edit to deny cannot silently drop it.
+                    const allow = entry.toolFilter?.allow
+                    setEntries({
+                      ...entries,
+                      [id]: {
+                        ...entry,
+                        toolFilter: (allow !== undefined && allow.length > 0) || deny.length > 0
+                          ? {
+                              ...(allow !== undefined && allow.length > 0 ? { allow } : {}),
+                              ...(deny.length > 0 ? { deny } : {}),
+                            }
+                          : undefined,
+                      },
+                    })
                   }}
                   placeholder="write, edit, todo_write, …"
                   style={inputStyle}
@@ -300,7 +329,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
             <span style={labelStyle}>模型</span>
             <input value={newEntry.model ?? ''} onChange={(event) => setNewEntry({ ...newEntry, model: event.target.value })} placeholder="k3-256k" style={inputStyle} />
           </div>
-          <button type="button" disabled={busy} onClick={addEntry} style={buttonStyle}>添加</button>
+          <button type="button" disabled={busy || !view.writable} onClick={addEntry} style={buttonStyle}>添加</button>
         </div>
       </div>
 

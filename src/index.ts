@@ -237,15 +237,23 @@ export function apply(ctx: Context, config: Config) {
     return true
   }
 
+  /** Raw `entries` map from one descriptor layer; arrays and non-objects are
+   *  rejected so a damaged document cannot masquerade as the library. */
+  const entriesOf = (section: unknown): Record<string, Entry> | undefined => {
+    if (typeof section !== 'object' || section === null || Array.isArray(section)) return undefined
+    const entries = (section as { entries?: unknown }).entries
+    return typeof entries === 'object' && entries !== null && !Array.isArray(entries)
+      ? entries as Record<string, Entry>
+      : undefined
+  }
+
   const currentView = (): { writable: boolean; revision: number; entries: Record<string, Entry> } | null => {
     const svc = settingsService
     const ns = settingsNs
     if (svc === undefined || ns === undefined) return null
     const descriptor = svc.describe().find((candidate) => candidate.ns === ns)
     if (descriptor === undefined) return null
-    const userEntries = (descriptor.user as { entries?: unknown } | undefined)?.entries
-    const valueEntries = (descriptor.value as { entries?: unknown } | undefined)?.entries
-    const entries = (typeof userEntries === 'object' && userEntries !== null ? userEntries : valueEntries) as Record<string, Entry> ?? {}
+    const entries = entriesOf(descriptor.user) ?? entriesOf(descriptor.value) ?? {}
     return { writable: svc.writable, revision: descriptor.revision, entries }
   }
 
@@ -280,7 +288,8 @@ export function apply(ctx: Context, config: Config) {
           sendJson(res, 503, { ok: false, error: 'not-ready' })
           return
         }
-        const expectedRevision = typeof body['expectedRevision'] === 'number' ? body['expectedRevision'] : undefined
+        const rawRevision = body['expectedRevision']
+        const expectedRevision = typeof rawRevision === 'number' && Number.isInteger(rawRevision) ? rawRevision : undefined
         try {
           if (body['op'] === 'delete') {
             const id = typeof body['id'] === 'string' ? body['id'] : ''
@@ -339,7 +348,7 @@ export function apply(ctx: Context, config: Config) {
   // ── model-facing tools ─────────────────────────────────────────────────────
   ctx.tools.register(defineTool({
     name: 'list_subagents',
-    description: 'List the named subagents available in the subagent library: each entry shows its id, role description, provider, model and background mode. Call this before delegating so you can pick a matching library_id.',
+    description: 'List the named subagents available in the subagent library: each entry shows its id, role description, provider, model, background mode and tool filter (allow/deny scoping — e.g. deny:[write, edit] marks a read-only role). Call this before delegating so you can pick a matching library_id.',
     parameters: {},
     output: {
       schema: {
@@ -352,6 +361,7 @@ export function apply(ctx: Context, config: Config) {
             provider: { type: 'string' },
             model: { type: 'string' },
             backgroundMode: { type: 'string' },
+            toolFilter: { type: 'string' },
           },
           additionalProperties: true,
         },
@@ -367,6 +377,14 @@ export function apply(ctx: Context, config: Config) {
         provider: entry.provider ?? '(session default)',
         model: entry.model ?? '(session default)',
         backgroundMode: entry.backgroundMode ?? 'one-shot',
+        ...(entry.toolFilter !== undefined
+          ? {
+              toolFilter: [
+                entry.toolFilter.allow !== undefined ? `allow:[${entry.toolFilter.allow.join(', ')}]` : '',
+                entry.toolFilter.deny !== undefined ? `deny:[${entry.toolFilter.deny.join(', ')}]` : '',
+              ].filter(Boolean).join(' '),
+            }
+          : {}),
       }))
     },
   }))
@@ -423,12 +441,15 @@ export function apply(ctx: Context, config: Config) {
       const parent = exec.agent
       if (!parent) throw new Error('delegate tool requires a calling agent (exec.agent was undefined)')
       const lib = resolveConfig()
-      const entry = lib.entries[args.library_id]
+      if (!ENTRY_ID.test(args.library_id)) throw new Error(`subagent library entry id "${args.library_id}" is invalid`)
+      // Own-property lookup only: a plain-object prototype chain would resolve
+      // ids like `constructor` to inherited functions (≠ undefined) and slip
+      // past the missing-entry error into a real delegation.
+      const entry = Object.hasOwn(lib.entries, args.library_id) ? lib.entries[args.library_id] : undefined
       if (entry === undefined) {
         const ids = Object.keys(lib.entries)
         throw new Error(`subagent library has no entry "${args.library_id}"${ids.length ? ` (available: ${ids.join(', ')})` : ' (library is empty)'}`)
       }
-      if (!ENTRY_ID.test(args.library_id)) throw new Error(`subagent library entry id "${args.library_id}" is invalid`)
 
       const subagentProviderName = entry.subagentProvider ?? lib.subagentProvider
       const transport = ctx.subagents.getProvider(subagentProviderName)
