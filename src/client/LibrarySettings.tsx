@@ -338,22 +338,26 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
         )
       })}
 
+      {/* Add-card mirrors the entry-card rhythm: header row with the action
+          button on the right, then one label row per field group. */}
       <div style={cardStyle}>
-        <div style={{ fontSize: '13px', fontWeight: 600 }}>新增子代理</div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-          <div style={colStyle}>
-            <span style={labelStyle}>ID</span>
-            <input value={newId} onChange={(event) => setNewId(event.target.value)} placeholder="k3-reviewer" style={{ ...inputStyle, maxWidth: '160px' }} />
-          </div>
-          <div style={{ ...colStyle, flex: 2 }}>
-            <span style={labelStyle}>描述</span>
-            <input
-              value={newEntry.description ?? ''}
-              onChange={(event) => setNewEntry({ ...newEntry, description: event.target.value })}
-              placeholder="角色描述（模型可见）"
-              style={inputStyle}
-            />
-          </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <span style={{ fontSize: '13px', fontWeight: 600 }}>新增子代理</span>
+          <span style={{ flex: 1 }} />
+          <button type="button" disabled={busy || !view.writable} onClick={addEntry} style={buttonStyle}>添加</button>
+        </div>
+        <div style={rowStyle}>
+          <span style={labelStyle}>ID</span>
+          <input value={newId} onChange={(event) => setNewId(event.target.value)} placeholder="k3-reviewer" style={{ ...inputStyle, maxWidth: '200px' }} />
+        </div>
+        <div style={rowStyle}>
+          <span style={labelStyle}>描述</span>
+          <input
+            value={newEntry.description ?? ''}
+            onChange={(event) => setNewEntry({ ...newEntry, description: event.target.value })}
+            placeholder="角色描述（模型可见）"
+            style={inputStyle}
+          />
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
           <div style={colStyle}>
@@ -381,7 +385,6 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
               style={{ ...inputStyle, maxWidth: '110px' }}
             />
           </div>
-          <button type="button" disabled={busy || !view.writable} onClick={addEntry} style={buttonStyle}>添加</button>
         </div>
       </div>
 
