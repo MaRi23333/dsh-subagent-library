@@ -1,5 +1,5 @@
 /**
- * dsh-plugin-subagent-library — browser half.
+ * dsh-subagent-library — browser half.
  *
  * A Settings section card ("子代理库") that reads and edits the
  * `subagent-library` settings namespace through the plugin's own host routes

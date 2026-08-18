@@ -1,5 +1,5 @@
 /**
- * Build both halves of dsh-plugin-subagent-library:
+ * Build both halves of dsh-subagent-library:
  *  - node half:  src/index.ts          -> lib/index.js  (ESM, node)
  *  - client half: src/client/index.tsx -> lib/client.js (CJS closure for window.__ModuleLoader__)
  * Externals mirror the loader module table (packages/client/web/src/platform.ts)
@@ -19,7 +19,7 @@ const CLIENT_EXTERNALS: readonly string[] = [...PLATFORM_MODULES, RUNTIME_STORE_
 
 export default defineConfig([
   {
-    name: 'dsh-plugin-subagent-library',
+    name: 'dsh-subagent-library',
     entry: { index: 'src/index.ts' },
     outDir: 'lib',
     format: ['esm'],
@@ -30,7 +30,7 @@ export default defineConfig([
     sourcemap: true,
   },
   {
-    name: 'dsh-plugin-subagent-library/client',
+    name: 'dsh-subagent-library/client',
     entry: { client: 'src/client/index.tsx' },
     outDir: 'lib',
     format: ['cjs'],
@@ -48,7 +48,7 @@ export default defineConfig([
     noExternal: (id: string) => (CLIENT_EXTERNALS.includes(id) ? undefined : true),
     outputOptions: {
       entryFileNames: 'client.js',
-      banner: 'window.__ModuleLoader__.load({ id: "dsh-plugin-subagent-library", factory: (require) => {',
+      banner: 'window.__ModuleLoader__.load({ id: "dsh-subagent-library", factory: (require) => {',
       footer: 'return module.exports; } });',
       intro: 'var module = { exports: {} }; var exports = module.exports;',
     },

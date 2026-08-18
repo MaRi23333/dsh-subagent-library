@@ -1,5 +1,5 @@
 /**
- * dsh-plugin-subagent-library: a settings-driven named-subagent library.
+ * dsh-subagent-library: a settings-driven named-subagent library.
  *
  * Entries live in the `subagent-library.entries` settings document (hot
  * reloaded, no restart), keyed by id. Each entry names a role: a model, an
@@ -20,7 +20,7 @@
  * delegation, inherited sandbox scope, depth caps, and continuable support
  * where the provider offers it.
  *
- * @module dsh-plugin-subagent-library
+ * @module dsh-subagent-library
  */
 
 import type { Context } from '@deepseek-ai/cordis'

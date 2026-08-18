@@ -1,4 +1,4 @@
-# dsh-plugin-subagent-library
+# dsh-subagent-library
 
 DeepSeek Harness 的具名子代理库插件：在 `settings.yaml` 里维护一份"角色子代理"清单（模型 + persona + 工具过滤），所有会话（任意 agent preset）都能通过两个模型可见工具使用它：
 
@@ -48,13 +48,13 @@ subagent-library:
 
 ```sh
 # 从 GitHub 安装（git-hosted 插件会在安装时构建）
-dsh plugin --profile web add github:<your-name>/dsh-plugin-subagent-library
+dsh plugin --profile web add github:<your-name>/dsh-subagent-library
 
 # 或从本地目录安装
-git clone https://github.com/<your-name>/dsh-plugin-subagent-library.git
-cd dsh-plugin-subagent-library
+git clone https://github.com/<your-name>/dsh-subagent-library.git
+cd dsh-subagent-library
 pnpm install && pnpm run build
-dsh plugin --profile web add /absolute/path/to/dsh-plugin-subagent-library
+dsh plugin --profile web add /absolute/path/to/dsh-subagent-library
 ```
 
 然后**重启 dsh web**（关掉终端重新运行 `dsh web`）并刷新页面。
