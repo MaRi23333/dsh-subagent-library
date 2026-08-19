@@ -31,6 +31,8 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
   const [newEntry, setNewEntry] = useState<StoredEntry>({ description: '', provider: '', model: '', backgroundMode: 'one-shot' })
 
   const alive = useRef(true)
+  /** Synchronous busy flag (see applyWrite's re-entry guard). */
+  const busyRef = useRef(false)
   useEffect(() => () => { alive.current = false }, [])
 
   /** Revision of the last committed server state (successful write or load).
@@ -73,6 +75,11 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
   }, [subscribeRefresh])
 
   const applyWrite = async (write: LibraryWrite, touchedId: string): Promise<boolean> => {
+    // Synchronous re-entry guard: setBusy is async state, so two clicks in the
+    // same frame would both fire applyWrite with one expectedRevision and the
+    // second would 409 — then reload and wipe drafts in other rows.
+    if (busyRef.current) return false
+    busyRef.current = true
     setBusy(true)
     setStatus(null)
     pendingSelfWrite.current = true
@@ -116,6 +123,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
       return false
     } finally {
       pendingSelfWrite.current = false
+      busyRef.current = false
       if (alive.current) setBusy(false)
     }
   }
@@ -225,8 +233,16 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
   if (view === null) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px 4px' }}>
-        <div style={{ fontSize: '15px', fontWeight: 600 }}>子代理库</div>
-        <div style={{ fontSize: '13px', opacity: 0.8 }}>正在加载…（若长时间无响应，请刷新页面或检查插件是否加载）</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <div style={{ fontSize: '15px', fontWeight: 600 }}>子代理库</div>
+          <button type="button" onClick={load} style={{ ...buttonStyle, opacity: 0.7 }}>重试</button>
+        </div>
+        {status !== null && (
+          <div style={{ fontSize: '12px', color: status.kind === 'ok' ? 'var(--dsh-color-success, #30a46c)' : 'var(--dsh-color-danger, #e5484d)', whiteSpace: 'pre-wrap' }}>
+            {status.text}
+          </div>
+        )}
+        {status === null && <div style={{ fontSize: '13px', opacity: 0.8 }}>正在加载…（若长时间无响应，请重试或检查插件是否加载）</div>}
       </div>
     )
   }

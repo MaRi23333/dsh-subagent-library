@@ -63,7 +63,10 @@ async function readView(): Promise<LibraryView> {
   const body: unknown = await response.json()
   if (!response.ok || typeof body !== 'object' || body === null || (body as { ok?: boolean }).ok !== true) {
     const error = (body as { error?: string } | null)?.error
-    throw new Error((error !== undefined ? ERROR_TEXT[error] : undefined) ?? '子代理库接口不可用（插件未加载？）')
+    // A diagnostic `message` (e.g. settings-seam registration failure) wins
+    // over the generic per-code text.
+    const message = (body as { message?: string } | null)?.message
+    throw new Error(message ?? (error !== undefined ? ERROR_TEXT[error] : undefined) ?? '子代理库接口不可用（插件未加载？）')
   }
   const value = body as { writable: boolean; revision: number; entries: Record<string, StoredEntry> }
   return { writable: value.writable, revision: value.revision, entries: value.entries ?? {} }

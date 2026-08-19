@@ -21,7 +21,7 @@ subagent-library:
       persona: |
         你是运行在 Kimi K3-256K 上的独立审核 agent……
       toolFilter:
-        deny: [write, edit, todo_write, create_goal, update_goal, subagent, subagent_fork, send_message, interrupt_agent, workflow, ralph]
+        deny: [write, edit, todo_write, create_goal, update_goal, subagent, subagent_fork, send_message, interrupt_agent, workflow, ralph, list_subagents, delegate]
       maxDepth: 1
       backgroundMode: continuable
 ```
@@ -36,9 +36,9 @@ subagent-library:
 | `model` | 否 | LLM 模型 id；缺省用调用方的会话默认模型 |
 | `subagentProvider` | 否 | **子代理传输层**（`spawn` 等 `ctx.subagents` provider）；默认取插件级默认 `spawn` |
 | `maxTokens` | 否 | 子代理输出上限 |
-| `persona` | 否 | 子代理角色提示词 |
-| `toolFilter` | 否 | `allow`/`deny` 工具名单（只读角色用 deny 禁写类工具） |
-| `maxDepth` | 否 | 委派深度上限；**无默认**——缺省完全交给 harness 全局深度语义（不误伤不支持 depthLimit 的传输层） |
+| `persona` | 否 | 子代理角色提示词。注意 persona 走严格的 `{{…}}` 模板插值（与部署 persona 同语义）——出现未注册的变量（如 `{{user}}`）会让子代理激活失败 |
+| `toolFilter` | 否 | `allow`/`deny` 工具名单（只读角色用 deny 禁写类工具；名单必须都是已注册的工具名，否则保存被拒）。**只读/受限角色建议把 `list_subagents`/`delegate` 也列入 deny**，防止子代理被全局提示词教去链式再派活 |
+| `maxDepth` | 否 | 委派深度上限；**缺省 = 传输层支持 depthLimit 时默认 3**（与官方 subagent 工具对齐，防链式递归派活；harness 自身无全局深度上限），不支持 depthLimit 的传输层则不设上限 |
 | `backgroundMode` | 否 | `one-shot`（默认）/ `continuable`（可续聊） |
 
 > 注意区分两个 provider 概念：`provider` 指 LLM 路由（`agentOptions.provider`），
@@ -47,7 +47,7 @@ subagent-library:
 ## 安装
 
 ```sh
-# 从 GitHub 安装（git-hosted 插件会在安装时构建）
+# 从 GitHub 安装（git-hosted 插件；仓库已提交 lib/ 构建产物，安装无需本地构建）
 dsh plugin --profile web add github:<your-name>/dsh-subagent-library
 
 # 或从本地目录安装

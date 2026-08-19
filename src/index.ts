@@ -30,7 +30,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
 import { assertSubagentMaxDepth, settleRun } from '@deepseek-ai/dsh-subagent'
-import type { SubagentRun, SubagentStartRequest } from '@deepseek-ai/dsh-subagent'
+import type { SubagentResult, SubagentRun, SubagentStartRequest } from '@deepseek-ai/dsh-subagent'
 import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import type { SettingsNamespace, SettingsProvider } from '@deepseek-ai/dsh-settings'
 import type { CommandResult } from '@deepseek-ai/dsh-commands'
@@ -41,6 +41,11 @@ export const inject = ['subagents', 'tools', 'systemPrompt']
 
 const ENTRY_ID = /^[a-z0-9][a-z0-9-]*$/
 const LIBRARY_SECTION_ORDER = 116.6
+/** Recursion cap applied when an entry omits maxDepth and the transport can
+ *  enforce it — the harness itself imposes no global delegation cap
+ *  (resolveChildDepth checks only an explicit value), and the official
+ *  subagent tool defaults to 3 to keep chained delegation bounded. */
+const DEFAULT_MAX_DEPTH = 3
 
 /** Optional child tool scoping: named tools vanish from the child's prompt AND refuse execution. */
 export interface ToolFilter {
@@ -120,10 +125,15 @@ async function settleStart(start: Promise<SubagentRun>, signal: AbortSignal): Pr
   }
 }
 
-/** Foreground collection: await the child, dispose the run, map stop reasons. */
+/** Foreground collection: await the child, dispose the run, map stop reasons.
+ *  `run.result` rejection must still release the run (mirrors settleRun). */
 async function settleForegroundRun(run: SubagentRun): Promise<{ kind: 'foreground'; runId: string; output: JsonValue[] }> {
-  const result = await run.result
-  await run.dispose()
+  let result: SubagentResult
+  try {
+    result = await run.result
+  } finally {
+    await run.dispose().catch(() => { /* keep the original failure */ })
+  }
   if (result.stopReason !== 'completed') {
     const text = outputValueText(result.output as unknown as JsonValue[])
     throw new Error(`subagent run ended: ${result.stopReason}${text ? ` — partial output: ${text}` : ''}`)
@@ -159,19 +169,37 @@ export function apply(ctx: Context, config: Config) {
   let source: (() => Config) | undefined
   let settingsService: SettingsProvider | undefined
   let settingsNs: SettingsNamespace | undefined
+  /** Non-null when the settings seam could not register this namespace (e.g. a
+   *  hand-edited settings.yaml section fails the Config schema). Registration
+   *  failing inside a Cordis child fiber would otherwise leave the library
+   *  silently empty; surface the cause through every consumer instead. */
+  let settingsFailure: string | undefined
   ctx.inject(['settings'], (sctx: Context) => {
     settingsService = sctx.settings
     settingsNs = settingsNamespace('subagent-library')
-    const scope = sctx.settings.register(settingsNs, Config, { base: config })
-    source = () => scope.get()
-    sctx.effect(() => () => {
-      source = () => config
-    })
-    scope.watch(() => {
-      // nothing derived is memoized — every operation re-reads the source.
-    })
+    try {
+      const scope = sctx.settings.register(settingsNs, Config, { base: config })
+      source = () => scope.get()
+      sctx.effect(() => () => {
+        source = () => config
+      })
+      scope.watch(() => {
+        // nothing derived is memoized — every operation re-reads the source.
+      })
+    } catch (error) {
+      settingsFailure = `subagent-library 设置段注册失败：${String(error)}。请检查 $DSH_HOME/settings.yaml 的 subagent-library 段（常见：description 缺失、entries 写成数组、YAML 布尔/字符串误写）。`
+    }
   })
-  const resolveConfig = (): Config => (source !== undefined ? source() : config)
+  /** Library entries restricted to schema-consistent ids: a hand-written key
+   *  like `k3_reviewer` passes z.dict (any string key) but can never be
+   *  delegated or deleted, so it is filtered out of every view. Saving any
+   *  entry then replaces the document and drops the orphaned key. */
+  const filterEntries = (raw: Record<string, Entry>): Record<string, Entry> =>
+    Object.fromEntries(Object.entries(raw).filter(([id]) => ENTRY_ID.test(id)))
+  const resolveConfig = (): Config => {
+    const base = source !== undefined ? source() : config
+    return { ...base, entries: filterEntries(base.entries) }
+  }
 
   // ── settings page API (own HTTP routes) ────────────────────────────────────
   // The Web gateway only exposes namespaces on its own allowlist
@@ -260,7 +288,7 @@ export function apply(ctx: Context, config: Config) {
     if (svc === undefined || ns === undefined) return null
     const descriptor = svc.describe().find((candidate) => candidate.ns === ns)
     if (descriptor === undefined) return null
-    const entries = entriesOf(descriptor.user) ?? entriesOf(descriptor.value) ?? {}
+    const entries = filterEntries(entriesOf(descriptor.user) ?? entriesOf(descriptor.value) ?? {})
     return { writable: svc.writable, revision: descriptor.revision, entries }
   }
 
@@ -271,6 +299,10 @@ export function apply(ctx: Context, config: Config) {
       path: '/subagent-library/api',
       handler: async (req: IncomingMessage, res: ServerResponse) => {
         if (req.method === 'GET') {
+          if (settingsFailure !== undefined) {
+            sendJson(res, 503, { ok: false, error: 'not-ready', message: settingsFailure })
+            return
+          }
           const view = currentView()
           if (view === null) {
             sendJson(res, 503, { ok: false, error: 'not-ready' })
@@ -328,6 +360,19 @@ export function apply(ctx: Context, config: Config) {
             }
             // Validate against the plugin schema before persisting.
             Config({ ...config, entries: candidate as Record<string, Entry> })
+            // A toolFilter naming an unregistered global tool makes every
+            // delegation of that entry fail (tools.restrict validates loudly);
+            // reject the save instead of persisting a time bomb.
+            for (const entry of Object.values(candidate)) {
+              const filter = (entry as Entry).toolFilter
+              if (filter === undefined) continue
+              for (const name of [...(filter.allow ?? []), ...(filter.deny ?? [])]) {
+                if (ctx.tools.get(name) === undefined) {
+                  sendJson(res, 400, { ok: false, error: 'invalid-tool-name', message: `toolFilter 引用了未注册的工具 "${name}"` })
+                  return
+                }
+              }
+            }
             // Wholesale-replace the `entries` map: the editor sends a COMPLETE
             // snapshot (fields the user cleared are absent, which is exactly
             // how a removal is expressed), while settings `update` deep-merges
@@ -386,6 +431,7 @@ export function apply(ctx: Context, config: Config) {
     },
     isConcurrencySafe: () => true,
     async execute() {
+      if (settingsFailure !== undefined) throw new Error(settingsFailure)
       const lib = resolveConfig()
       return Object.entries(lib.entries).map(([id, entry]) => ({
         id,
@@ -454,6 +500,7 @@ export function apply(ctx: Context, config: Config) {
     },
     isConcurrencySafe: () => true,
     async execute(args, exec): Promise<DelegateResult> {
+      if (settingsFailure !== undefined) throw new Error(settingsFailure)
       const parent = exec.agent
       if (!parent) throw new Error('delegate tool requires a calling agent (exec.agent was undefined)')
       const lib = resolveConfig()
@@ -478,7 +525,13 @@ export function apply(ctx: Context, config: Config) {
         throw new Error(`delegate: transport "${subagentProviderName}" does not support continuable children`)
       }
 
-      const maxDepth = entry.maxDepth
+      // A missing maxDepth used to mean "harness-managed", but the harness
+      // imposes no global recursion cap (resolveChildDepth checks only an
+      // explicit value). Default to 3 like the official subagent tool, but
+      // only when the transport can enforce it — providers without a
+      // depthLimit capability stay unaffected (design decision #4, amended
+      // after the red-team review).
+      const maxDepth = entry.maxDepth ?? (transport.capabilities.depthLimit ? DEFAULT_MAX_DEPTH : undefined)
       if (maxDepth !== undefined) assertSubagentMaxDepth(maxDepth)
       // The one-shot capability flags (depthLimit/persona/toolFilter) describe
       // ONLY the one-shot `start` path; a continuable child is composed by the
