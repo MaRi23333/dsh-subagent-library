@@ -45,8 +45,23 @@ jobs:
       - name: Build
         run: pnpm run build
 
+      # The bundle embeds pnpm virtual-store paths in `//#region` comments and
+      # source-map sources. Those paths are truncated-with-hash on Windows but
+      # full-length on Linux, so a byte-exact diff can never pass cross-OS.
+      # Mask the machine-specific path segment and compare everything else.
       - name: lib/ must match committed artifacts
-        run: git diff --exit-code -- lib
+        run: |
+          set -e
+          for f in lib/index.js lib/index.js.map lib/client.js lib/client.js.map; do
+            git show "HEAD:$f" | sed -E 's#node_modules/\.pnpm/[^/\\"]+#node_modules/.pnpm/<pkg>#g' > /tmp/committed
+            sed -E 's#node_modules/\.pnpm/[^/\\"]+#node_modules/.pnpm/<pkg>#g' "$f" > /tmp/built
+            if ! diff -q /tmp/committed /tmp/built > /dev/null; then
+              echo "stale or divergent build: $f"
+              diff -u /tmp/committed /tmp/built | head -40
+              exit 1
+            fi
+          done
+          echo "lib/ matches committed artifacts (virtual-store paths normalized)"
 
       - name: Host + client smoke
         run: pnpm run smoke
