@@ -1,7 +1,8 @@
 /**
- * npm pack whitelist (SUB-PKG-001 / SUB-TEST-001): the published tarball must
- * contain exactly the approved files — no stray build output, no sources, no
- * local config, no HANDOFF.md. Run: pnpm run check:pack
+ * npm pack whitelist (SUB-PKG-001 / SUB-TEST-001 / post-public rectify): the
+ * published tarball must contain exactly the approved files — no stray build
+ * output, no sources, no local config, no HANDOFF.md, and no source maps
+ * (`.map` stays in git for debugging; it is unused at runtime). Run: pnpm run check:pack
  */
 import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
@@ -57,11 +58,10 @@ const files = result.files.map((f) => f.path).sort()
 const expected = [
   'LICENSE',
   'README.md',
+  'THIRD_PARTY_NOTICES.md',
   'cordis.patch.yml',
   'lib/client.js',
-  'lib/client.js.map',
   'lib/index.js',
-  'lib/index.js.map',
   'package.json',
 ].sort()
 
