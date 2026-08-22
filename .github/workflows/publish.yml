@@ -1,0 +1,101 @@
+name: publish-npm
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: npm-publish-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.event.release.prerelease == false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 11.21.0
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+
+      - name: Setup npm with trusted-publishing support
+        run: npm install --global npm@11.19.0
+
+      - name: Verify release identity
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          tag_type=$(git cat-file -t "refs/tags/$RELEASE_TAG")
+          tag_commit=$(git rev-parse "refs/tags/$RELEASE_TAG^{}")
+          head_commit=$(git rev-parse HEAD)
+          if [ "$tag_type" != tag ]; then
+            echo "::error::$RELEASE_TAG is not an annotated tag"
+            exit 1
+          fi
+          if [ "$tag_commit" != "$head_commit" ]; then
+            echo "::error::$RELEASE_TAG does not point to the checked-out commit"
+            exit 1
+          fi
+          node -e "const p=require('./package.json'); const expected='v'+p.version; if(process.env.RELEASE_TAG!==expected){console.error('release tag '+process.env.RELEASE_TAG+' does not match '+expected); process.exit(1)}"
+
+      - name: Reject an already-published version
+        run: |
+          set -euo pipefail
+          package_name=$(node -p "require('./package.json').name")
+          package_version=$(node -p "require('./package.json').version")
+          if npm view "$package_name@$package_version" version --silent >/dev/null 2>&1; then
+            echo "::error::$package_name@$package_version is already published"
+            exit 1
+          fi
+
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Unit tests
+        run: pnpm run test
+
+      - name: Build
+        run: pnpm run build
+
+      - name: lib/ must match committed artifacts
+        run: |
+          set -euo pipefail
+          for f in lib/index.js lib/index.js.map lib/client.js lib/client.js.map; do
+            git show "HEAD:$f" | sed -E 's#node_modules/\.pnpm/[^/\\"]+#node_modules/.pnpm/<pkg>#g' > /tmp/committed
+            sed -E 's#node_modules/\.pnpm/[^/\\"]+#node_modules/.pnpm/<pkg>#g' "$f" > /tmp/built
+            if ! diff -q /tmp/committed /tmp/built > /dev/null; then
+              echo "stale or divergent build: $f"
+              diff -u /tmp/committed /tmp/built | head -40
+              exit 1
+            fi
+          done
+
+      - name: Host + client smoke
+        run: pnpm run smoke
+
+      - name: Package whitelist
+        run: pnpm run check:pack
+
+      - name: Publish to npm
+        run: npm publish --access public
