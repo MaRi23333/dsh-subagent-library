@@ -78,6 +78,8 @@ Settings → 设置 里新增「子代理库」卡片：可视化增删改条目
 传输层 subagentProvider / 输出上限 maxTokens / 禁用工具 / 深度 / 后台模式 / 角色提示词），写回 `$DSH_HOME/settings.yaml`，热生效。
 新增卡只收常用字段（ID / 描述 / Provider / 模型 / 传输层 / 输出上限），其余字段（禁用工具 / 深度 / 后台模式 / 角色提示词）在条目卡内编辑。
 
+> **安全提示**：子代理库的设置接口（`/subagent-library/api`）遵循 DSH Web Host 的本地可信边界，插件自身不含独立身份验证层。若将 DSH Web 绑定到局域网 / 公网 / 反向代理，请在外层配置认证与访问控制，不要把该接口暴露给不可信客户端——子代理 persona 与配置可能包含内部工作规则。
+
 ## 设计说明
 
 - 工具注册在 **host 平面**：不依赖任何 agent preset，切 preset 不会丢；
