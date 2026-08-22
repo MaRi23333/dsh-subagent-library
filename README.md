@@ -48,10 +48,10 @@ subagent-library:
 
 ```sh
 # 从 GitHub 安装（git-hosted 插件；仓库已提交 lib/ 构建产物，安装无需本地构建）
-dsh plugin --profile web add github:<your-name>/dsh-subagent-library
+dsh plugin --profile web add github:MaRi23333/dsh-subagent-library
 
 # 或从本地目录安装
-git clone https://github.com/<your-name>/dsh-subagent-library.git
+git clone https://github.com/MaRi23333/dsh-subagent-library.git
 cd dsh-subagent-library
 pnpm install && pnpm run build
 dsh plugin --profile web add /absolute/path/to/dsh-subagent-library
