@@ -34,7 +34,7 @@ Adding entries needs no hand-written YAML either: ask the main agent to do it (i
 
 <p align="center">
   <img src="./assets/readme/screenshot-command-palette.png" alt="The /subagent command in the command palette" /><br>
-  <em>The `/subagent` command (a human-only roster viewer; using the roster never requires it)</em>
+  <em>The `/subagent` command (quick roster viewer)</em>
 </p>
 
 <p align="center">
