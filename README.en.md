@@ -14,14 +14,33 @@
 
 ## Overview
 
-A named subagent roster plugin for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) Web GUI: keep a list of role subagents (model + persona + tool filter) in `settings.yaml`, and every conversation — under any agent preset — can use them through two model-facing tools:
+A named subagent roster plugin for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) Web GUI: turn your recurring roles (code review, red team, multimodal understanding…) into a persistent named roster (model + persona + tool filter). Then **just tell the main agent "do this with xxx"** — the model picks and dispatches through two tools by itself:
 
 - `list_subagents` — lists roster entries (id / role description / model) so the model can pick a suitable one;
 - `delegate` — dispatches work by `library_id`: foreground wait, background one-shot, or a continuable (resumable) subagent, per the entry's configuration.
 
-A `/subagent` command also lists the roster in the command palette.
+Available in every conversation (any agent preset), **no slash command needed**; the `/subagent` command is only for humans to peek at the roster in the command palette.
+
+Adding entries needs no hand-written YAML either: ask the main agent to do it (it edits `$DSH_HOME/settings.yaml`, hot-reloaded), or edit visually in the settings page.
 
 > Distinction from the official capabilities: the official `subagent` tool dispatches ad-hoc tasks (you describe the task each time), and the official `list_agents` lists *running* child instances; this plugin maintains a **persistent named roster** (edited visually in a settings page, hot-reloaded). The model picks an entry with `list_subagents` and dispatches by id with `delegate`.
+
+## Screenshots
+
+<p align="center">
+  <img src="./assets/readme/screenshot-settings.png" width="75%" alt="Subagent Library settings card: edit roster entries visually" /><br>
+  <em>The Subagent Library settings card: add/edit/remove entries visually (model / transport / depth / denied tools / persona)</em>
+</p>
+
+<p align="center">
+  <img src="./assets/readme/screenshot-command-palette.png" alt="The /subagent command in the command palette" /><br>
+  <em>The `/subagent` command (a human-only roster viewer; using the roster never requires it)</em>
+</p>
+
+<p align="center">
+  <img src="./assets/readme/screenshot-roster.png" width="75%" alt="/subagent output: the named subagent roster" /><br>
+  <em>Roster output example: one-line role description + model route + continuable marker per entry</em>
+</p>
 
 ## Configuration
 

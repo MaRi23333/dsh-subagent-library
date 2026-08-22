@@ -21,14 +21,33 @@
 
 ## 简介
 
-DeepSeek Harness 的具名子代理库插件：在 `settings.yaml` 里维护一份"角色子代理"清单（模型 + persona + 工具过滤），所有会话（任意 agent preset）都能通过两个模型可见工具使用它：
+DeepSeek Harness 的具名子代理库插件：把常用角色（代码审查、红队、多模态理解……）配成一份持久化的具名子代理名册（模型 + persona + 工具过滤），之后**只需告诉主会话 agent「用 xxx 做这件事」**——模型自己通过两个工具完成选人和派活：
 
-- `list_subagents` — 列出库内条目（id / 角色描述 / 模型），模型据此挑选合适条目；
+- `list_subagents` — 列出名册条目（id / 角色描述 / 模型），模型据此挑选；
 - `delegate` — 按 `library_id` 派活：前台等待、后台 one-shot 任务、或 continuable 可续聊子代理（按条目配置）。
 
-另有 `/subagent` 命令在命令面板里列出库内容。
+任何会话（任意 agent preset）直接可用，**不需要 slash 命令**；`/subagent` 命令只是给人类在命令面板里快速查看名册用的。
+
+新增条目也不用手写 YAML：直接让主会话 agent 帮你配（它编辑 `$DSH_HOME/settings.yaml`，热生效），或在设置页里可视化编辑。
 
 > 与官方能力的区分：官方 `subagent` 工具是临时派活（每次现场描述任务），官方 `list_agents` 列的是正在运行的子代实例；本插件维护的是**持久化的具名角色名册**（设置页可视化编辑、热生效），模型用 `list_subagents` 选人、`delegate` 按 id 派活。
+
+## 界面
+
+<p align="center">
+  <img src="./assets/readme/screenshot-settings.png" width="75%" alt="设置页「子代理库」卡片：可视化编辑名册条目" /><br>
+  <em>设置页「子代理库」卡片：可视化增删改条目（模型 / 传输层 / 深度 / 禁用工具 / persona）</em>
+</p>
+
+<p align="center">
+  <img src="./assets/readme/screenshot-command-palette.png" alt="命令面板里的 /subagent 命令" /><br>
+  <em>`/subagent` 命令（仅供人类快速查看名册；使用名册不需要它）</em>
+</p>
+
+<p align="center">
+  <img src="./assets/readme/screenshot-roster.png" width="75%" alt="/subagent 输出：具名子代理名册一览" /><br>
+  <em>名册输出示例：每个条目一句话角色描述 + 模型路由 + 可续聊标记</em>
+</p>
 
 ## 配置
 
