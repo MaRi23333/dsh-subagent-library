@@ -7,6 +7,8 @@ DeepSeek Harness 的具名子代理库插件：在 `settings.yaml` 里维护一�
 
 另有 `/subagent` 命令在命令面板里列出库内容。
 
+> 与官方能力的区分：官方 `subagent` 工具是临时派活（每次现场描述任务），官方 `list_agents` 列的是正在运行的子代实例；本插件维护的是**持久化的具名角色名册**（设置页可视化编辑、热生效），模型用 `list_subagents` 选人、`delegate` 按 id 派活。
+
 ## 配置
 
 `$DSH_HOME/settings.yaml`（热生效，无需重启）：
@@ -46,18 +48,26 @@ subagent-library:
 
 ## 安装
 
-```sh
-# 从 GitHub 安装（git-hosted 插件；仓库已提交 lib/ 构建产物，安装无需本地构建）
-dsh plugin --profile web add github:MaRi23333/dsh-subagent-library
+一条命令，从 npm 安装（推荐）：
 
-# 或从本地目录安装
-git clone https://github.com/MaRi23333/dsh-subagent-library.git
-cd dsh-subagent-library
-pnpm install && pnpm run build
-dsh plugin --profile web add /absolute/path/to/dsh-subagent-library
+```sh
+npx @deepseek-ai/dsh plugin --profile web add dsh-subagent-library
 ```
 
 然后**重启 dsh web**（关掉终端重新运行 `dsh web`）并刷新页面。
+
+其他安装方式：
+
+```sh
+# 从 GitHub 安装（git-hosted 插件；仓库已提交 lib/ 构建产物，安装无需本地构建）
+npx @deepseek-ai/dsh plugin --profile web add github:MaRi23333/dsh-subagent-library
+
+# 从本地目录安装
+git clone https://github.com/MaRi23333/dsh-subagent-library.git
+cd dsh-subagent-library
+pnpm install && pnpm run build
+npx @deepseek-ai/dsh plugin --profile web add /absolute/path/to/dsh-subagent-library
+```
 
 > 仓库已提交 `lib/` 构建产物，git 安装无需本地构建；改源码后运行 `pnpm run build` 再重启即可。
 > 库内条目的增删改（`$DSH_HOME/settings.yaml`）**热生效**，无需重启。
