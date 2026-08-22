@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" width="1200" height="320">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8faff"/>
+      <stop offset="1" stop-color="#eef2fe"/>
+    </linearGradient>
+  </defs>
+
+  <!-- canvas -->
+  <rect x="0.5" y="0.5" width="1199" height="319" rx="18" fill="url(#bg)" stroke="#dfe6fb"/>
+
+  <!-- brand badge: roster glyph (one coordinator node dispatching to three named agents) -->
+  <g transform="translate(100,124) scale(4.5)">
+    <rect x="-2.2" y="-2.2" width="20.4" height="20.4" rx="4.6" fill="#4d6bfe"/>
+    <g fill="none" stroke="#ffffff" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="5" cy="8" r="1.9" stroke-width="1.05"/>
+      <circle cx="12.4" cy="4.6" r="1.6" stroke-width="1"/>
+      <circle cx="12.4" cy="8" r="1.6" stroke-width="1"/>
+      <circle cx="12.4" cy="11.4" r="1.6" stroke-width="1"/>
+      <path d="M6.7 7.1L10.9 5.1M6.9 8h3.9M6.7 8.9l4.2 2" stroke-width="0.9"/>
+    </g>
+  </g>
+
+  <!-- title / tagline -->
+  <text x="248" y="152" font-family="ui-monospace, 'Cascadia Code', Consolas, 'Courier New', monospace"
+        font-size="42" font-weight="700" fill="#16204a" letter-spacing="-0.5">dsh-subagent-library</text>
+  <text x="248" y="200" font-family="'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif"
+        font-size="23" fill="#3d4468">DeepSeek Harness 具名子代理库 · 设置页可视化管理</text>
+  <text x="248" y="238" font-family="'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif"
+        font-size="16" fill="#7c84a8">list_subagents 选人 · delegate 派活 · 模型 / persona / 工具过滤 / 深度可配 — named subagent roster for the DSH Web GUI</text>
+
+  <!-- roster tree, right side -->
+  <g stroke="#4d6bfe" fill="none" stroke-linecap="round">
+    <path d="M920 160h40M960 160C985 160 985 96 1010 96M960 160c25 0 25 0 50 0M960 160c25 0 25 64 50 64M960 160c25 0 25 128 50 128" stroke-width="3" opacity="0.45"/>
+    <circle cx="900" cy="160" r="20" stroke-width="4"/>
+    <circle cx="1032" cy="96"  r="15" stroke-width="3.5" opacity="0.9"/>
+    <circle cx="1032" cy="160" r="15" stroke-width="3.5" opacity="0.7"/>
+    <circle cx="1032" cy="224" r="15" stroke-width="3.5" opacity="0.55"/>
+    <circle cx="1032" cy="288" r="15" stroke-width="3.5" opacity="0.4"/>
+  </g>
+</svg>

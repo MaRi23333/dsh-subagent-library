@@ -1,5 +1,26 @@
 # dsh-subagent-library
 
+**中文 | [English](./README.en.md)**
+
+<p align="center">
+  <img src="./assets/readme/hero.svg" width="100%" alt="dsh-subagent-library — DeepSeek Harness 具名子代理库插件" />
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/github/actions/workflow/status/MaRi23333/dsh-subagent-library/ci.yml?style=flat-square&label=CI" alt="CI" />
+  <img src="https://img.shields.io/github/license/MaRi23333/dsh-subagent-library?style=flat-square" alt="License: MIT" />
+  <img src="https://img.shields.io/badge/DeepSeek%20Harness-0.1.0--rc.6-4d6bfe?style=flat-square" alt="DeepSeek Harness 0.1.0-rc.6" />
+</p>
+
+> **English:** dsh-subagent-library is a named subagent roster plugin for the
+> [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web GUI —
+> manage role entries (model / persona / tool filter / depth / background mode)
+> from a settings page, hot-reloaded, then let any conversation pick one with
+> `list_subagents` and dispatch work with `delegate`. See
+> [README.en.md](./README.en.md) for the full English version.
+
+## 简介
+
 DeepSeek Harness 的具名子代理库插件：在 `settings.yaml` 里维护一份"角色子代理"清单（模型 + persona + 工具过滤），所有会话（任意 agent preset）都能通过两个模型可见工具使用它：
 
 - `list_subagents` — 列出库内条目（id / 角色描述 / 模型），模型据此挑选合适条目；
@@ -98,4 +119,6 @@ pnpm run build   # host: lib/index.js；client: lib/client.js
 
 ## License
 
-[MIT](./LICENSE)
+[MIT](./LICENSE)。本仓库内联构建产物的第三方许可证声明见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。
+
+本插件是独立社区项目，与 DeepSeek 无任何隶属或背书关系；`DeepSeek Harness` 名称仅用于标明兼容平台。
