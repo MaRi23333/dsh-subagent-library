@@ -41,7 +41,7 @@ DeepSeek Harness 的具名子代理库插件：把常用角色（代码审查、
 
 <p align="center">
   <img src="./assets/readme/screenshot-command-palette.png" alt="命令面板里的 /subagent 命令" /><br>
-  <em>`/subagent` 命令（快速查看子代理库名册）</em>
+  <em><code>/subagent</code> 命令（快速查看子代理库名册）</em>
 </p>
 
 <p align="center">

@@ -34,7 +34,7 @@ Adding entries needs no hand-written YAML either: ask the main agent to do it (i
 
 <p align="center">
   <img src="./assets/readme/screenshot-command-palette.png" alt="The /subagent command in the command palette" /><br>
-  <em>The `/subagent` command (quick roster viewer)</em>
+  <em>The <code>/subagent</code> command (quick roster viewer)</em>
 </p>
 
 <p align="center">
@@ -108,7 +108,7 @@ npx @deepseek-ai/dsh plugin --profile web add /absolute/path/to/dsh-subagent-lib
 
 ## Settings page
 
-A **Subagent Library** card appears under Settings → 设置: visually add/edit/remove entries
+A **Subagent Library** card appears under Settings: visually add/edit/remove entries
 (description / provider / model / subagentProvider transport / maxTokens / denied tools /
 depth / background mode / persona), written back to `$DSH_HOME/settings.yaml`, hot-reloaded.
 The add card takes the common fields (ID / description / provider / model / transport /
