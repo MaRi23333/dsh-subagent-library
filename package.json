@@ -1,6 +1,6 @@
 {
   "name": "dsh-subagent-library",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Named subagent library for DeepSeek Harness: a settings-driven roster of role subagents (model + persona + tool filter), exposed to every session through the list_subagents and delegate tools, a /subagent command, and a Settings page.",
   "keywords": [
     "deepseek-harness",
@@ -66,9 +66,11 @@
     "prepack": "pnpm run build"
   },
   "license": "MIT",
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/schemastery": "^3.0.0"
+    "@deepseek-ai/cordis": "^4.0.1"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.1",
@@ -88,7 +90,6 @@
     "@deepseek-ai/dsh-settings": "0.1.0-rc.6",
     "@deepseek-ai/dsh-subagent": "0.1.0-rc.6",
     "@deepseek-ai/dsh-tools": "0.1.0-rc.6",
-    "@deepseek-ai/schemastery": "3.18.1",
     "@types/node": "^26.2.0",
     "@types/react": "~18.3.1",
     "@types/react-dom": "~18.3.0",
