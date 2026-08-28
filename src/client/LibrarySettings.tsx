@@ -189,6 +189,10 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
       setStatus({ kind: 'error', text: '输出上限需为 ≥1 的整数。' })
       return
     }
+    if (newEntry.maxDepth !== undefined && (!Number.isInteger(newEntry.maxDepth) || newEntry.maxDepth < 1)) {
+      setStatus({ kind: 'error', text: '深度上限需为 ≥1 的整数。' })
+      return
+    }
     void applyWrite({ op: 'save', entries: { ...serverEntries, [id]: cleanEntry(newEntry) }, expectedRevision: view?.revision }, id).then((ok) => {
       if (alive.current && ok) {
         setNewId('')
@@ -447,6 +451,60 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
               style={{ ...inputStyle, maxWidth: '110px' }}
             />
           </div>
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+          <div style={colStyle}>
+            <span style={labelStyle}>深度上限</span>
+            <input
+              type="number"
+              min={1}
+              value={newEntry.maxDepth ?? ''}
+              onChange={(event) => setNewEntry({ ...newEntry, maxDepth: event.target.value === '' ? undefined : Number(event.target.value) })}
+              style={{ ...inputStyle, maxWidth: '80px' }}
+            />
+          </div>
+          <div style={colStyle}>
+            <span style={labelStyle}>后台模式</span>
+            <select
+              value={newEntry.backgroundMode ?? 'one-shot'}
+              onChange={(event) => setNewEntry({ ...newEntry, backgroundMode: event.target.value as 'one-shot' | 'continuable' })}
+              style={{ ...inputStyle, maxWidth: '140px' }}
+            >
+              <option value="one-shot">one-shot</option>
+              <option value="continuable">continuable</option>
+            </select>
+          </div>
+          <div style={{ ...colStyle, flex: 2 }}>
+            <span style={labelStyle}>禁用工具</span>
+            <input
+              value={(newEntry.toolFilter?.deny ?? []).join(', ')}
+              onChange={(event) => {
+                const deny = event.target.value.split(',').map((item) => item.trim()).filter(Boolean)
+                const allow = newEntry.toolFilter?.allow
+                setNewEntry({
+                  ...newEntry,
+                  toolFilter: (allow !== undefined && allow.length > 0) || deny.length > 0
+                    ? {
+                        ...(allow !== undefined && allow.length > 0 ? { allow } : {}),
+                        ...(deny.length > 0 ? { deny } : {}),
+                      }
+                    : undefined,
+                })
+              }}
+              placeholder="write, edit, todo_write, …"
+              style={inputStyle}
+            />
+          </div>
+        </div>
+        <div style={rowStyle}>
+          <span style={labelStyle}>角色提示词</span>
+          <textarea
+            value={newEntry.persona ?? ''}
+            onChange={(event) => setNewEntry({ ...newEntry, persona: event.target.value })}
+            placeholder="子代理的系统提示词（可选）"
+            rows={3}
+            style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit' }}
+          />
         </div>
       </div>
 
