@@ -168,6 +168,13 @@ export function makeHost(options: HostOptions = {}): MockHost {
       }
       if (deps.includes('webServer')) {
         cb({ webServer: web, effect: (fn: () => unknown) => fn() })
+        return
+      }
+      if (deps.includes('agents')) {
+        // Mirrors the real Cordis seam: the agents registry is only reachable
+        // through inject — a bare `ctx.agents` property access does NOT work
+        // (the real host throws "cannot get property agents without inject").
+        cb({ agents: { list: () => agents.map((agent) => ({ ctx: agent })) } })
       }
     },
     tools: {
@@ -179,9 +186,6 @@ export function makeHost(options: HostOptions = {}): MockHost {
         const scoped = scope as { tools?: string[] }
         return (scoped.tools ?? []).includes(name) ? { name } : undefined
       },
-    },
-    agents: {
-      list: () => agents.map((agent) => ({ ctx: agent })),
     },
     systemPrompt: { section: () => {} },
     subagents: {

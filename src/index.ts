@@ -63,10 +63,13 @@ const DEFAULT_MAX_DEPTH = 3
  * validation be the backstop — never block the settings page over a name we
  * cannot verify.
  */
-function isKnownToolName(ctx: Context, name: string): boolean {
+function isKnownToolName(
+  ctx: Context,
+  name: string,
+  liveAgents: () => Array<{ ctx?: unknown }>,
+): boolean {
   if (ctx.tools.get(name) !== undefined) return true
-  const agents = (ctx as { agents?: { list?: () => Array<{ ctx?: unknown }> } }).agents
-  const live = agents?.list?.() ?? []
+  const live = liveAgents()
   if (live.length === 0) return true
   // ScopeKey is `object`; the agent contexts are exact scopes for dsh-tools.
   const scopedTools = ctx.tools as { get(name: string, scope?: unknown): unknown }
@@ -215,6 +218,14 @@ export function apply(ctx: Context, config: Config) {
     } catch (error) {
       settingsFailure = `subagent-library 设置段注册失败：${String(error)}。请检查 $DSH_HOME/settings.yaml 的 subagent-library 段（常见：description 缺失、entries 写成数组、YAML 布尔/字符串误写）。`
     }
+  })
+  /** Live agents, resolved through the inject seam — Cordis property access on
+   *  ctx requires an inject declaration, and the registry service may be absent
+   *  (non-agent hosts, headless config saves); fail open to `[]`. */
+  let liveAgents: (() => Array<{ ctx?: unknown }>) = () => []
+  ctx.inject(['agents'], (actx: Context) => {
+    const registry = (actx as { agents?: { list(): Array<{ ctx?: unknown }> } }).agents
+    liveAgents = () => registry?.list() ?? []
   })
   /** Library entries restricted to schema-consistent ids: a hand-written key
    *  like `k3_reviewer` passes z.dict (any string key) but can never be
@@ -394,7 +405,7 @@ export function apply(ctx: Context, config: Config) {
               const filter = (entry as Entry).toolFilter
               if (filter === undefined) continue
               for (const name of [...(filter.allow ?? []), ...(filter.deny ?? [])]) {
-                if (!isKnownToolName(ctx, name)) {
+                if (!isKnownToolName(ctx, name, liveAgents)) {
                   sendJson(res, 400, { ok: false, error: 'invalid-tool-name', message: `条目 "${id}" 的 toolFilter 引用了未注册的工具 "${name}"` })
                   return
                 }
