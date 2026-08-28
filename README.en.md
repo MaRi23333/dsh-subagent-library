@@ -72,7 +72,7 @@ Entry fields:
 | `subagentProvider` | no | **Subagent transport** (a `ctx.subagents` provider such as `spawn`); defaults to the plugin-level default `spawn` |
 | `maxTokens` | no | Subagent output cap |
 | `persona` | no | Subagent system prompt. Personas go through strict `{{…}}` template interpolation (same semantics as deployment personas) — an unregistered variable (e.g. `{{user}}`) fails child activation |
-| `toolFilter` | no | `allow`/`deny` tool-name lists (deny write-class tools for read-only roles). **Read-only/restricted roles should also deny `list_subagents`/`delegate`** so children are not taught by the global prompt to re-delegate in a chain. Names must be tools a child can see — a misspelled name fails loudly at the **first delegation** (the error lists the known tools); saves are not pre-validated |
+| `toolFilter` | no | `allow`/`deny` tool-name lists (deny write-class tools for read-only roles). **Read-only/restricted roles should also deny `list_subagents`/`delegate`** so children are not taught by the global prompt to re-delegate in a chain. Names are checked against the **actual parent session's** tool composition at delegation: a name missing there fails that delegation with a clear error listing the known tools — surfaced at the delegate call for foreground/continuable runs, and in the task result for background one-shots; saves are not pre-validated |
 | `maxDepth` | no | Delegation depth cap; **when unset, defaults to 3 when the transport supports depthLimit** (aligned with the official subagent tool to prevent chained recursive delegation; the harness itself has no global depth cap). Transports without depthLimit stay uncapped |
 | `backgroundMode` | no | `one-shot` (default) / `continuable` (resumable) |
 

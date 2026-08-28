@@ -147,7 +147,7 @@ test('POST save accepts any toolFilter names — delegate-time restrict is the e
   // error, which is the real guard. A save-time pre-check produced false
   // rejections that broke the settings UI for legitimate deny lists
   // (0.2.2–0.2.4; removed in 0.2.5).
-  const host = hostWith({ knownTools: ['read'] })
+  const host = hostWith()
   const res = await postJson(host.web, {
     op: 'save',
     entries: {
