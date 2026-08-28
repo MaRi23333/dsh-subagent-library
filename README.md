@@ -79,7 +79,7 @@ subagent-library:
 | `subagentProvider` | 否 | **子代理传输层**（`spawn` 等 `ctx.subagents` provider）；默认取插件级默认 `spawn` |
 | `maxTokens` | 否 | 子代理输出上限 |
 | `persona` | 否 | 子代理角色提示词。注意 persona 走严格的 `{{…}}` 模板插值（与部署 persona 同语义）——出现未注册的变量（如 `{{user}}`）会让子代理激活失败 |
-| `toolFilter` | 否 | `allow`/`deny` 工具名单（只读角色用 deny 禁写类工具；名单必须都是已注册的工具名，否则保存被拒）。**只读/受限角色建议把 `list_subagents`/`delegate` 也列入 deny**，防止子代理被全局提示词教去链式再派活 |
+| `toolFilter` | 否 | `allow`/`deny` 工具名单（只读角色用 deny 禁写类工具）。**只读/受限角色建议把 `list_subagents`/`delegate` 也列入 deny**，防止子代理被全局提示词教去链式再派活；名单里的工具名必须是子代可见的工具——拼写错误会在**首次委派时**由 harness 明确报错（会列出可用工具名），保存阶段不做校验 |
 | `maxDepth` | 否 | 委派深度上限；**缺省 = 传输层支持 depthLimit 时默认 3**（与官方 subagent 工具对齐，防链式递归派活；harness 自身无全局深度上限），不支持 depthLimit 的传输层则不设上限 |
 | `backgroundMode` | 否 | `one-shot`（默认）/ `continuable`（可续聊） |
 
@@ -116,7 +116,7 @@ npx @deepseek-ai/dsh plugin --profile web add /absolute/path/to/dsh-subagent-lib
 
 Settings → 设置 里新增「子代理库」卡片：可视化增删改条目（描述 / Provider / 模型 /
 传输层 subagentProvider / 输出上限 maxTokens / 禁用工具 / 深度 / 后台模式 / 角色提示词），写回 `$DSH_HOME/settings.yaml`，热生效。
-新增卡只收常用字段（ID / 描述 / Provider / 模型 / 传输层 / 输出上限），其余字段（禁用工具 / 深度 / 后台模式 / 角色提示词）在条目卡内编辑。
+新增卡与条目卡字段一致（ID / 描述 / Provider / 模型 / 传输层 / 输出上限 / 禁用工具 / 深度 / 后台模式 / 角色提示词），一次配置完整角色。
 
 > **安全提示**：子代理库的设置接口（`/subagent-library/api`）遵循 DSH Web Host 的本地可信边界，插件自身不含独立身份验证层。若将 DSH Web 绑定到局域网 / 公网 / 反向代理，请在外层配置认证与访问控制，不要把该接口暴露给不可信客户端——子代理 persona 与配置可能包含内部工作规则。
 

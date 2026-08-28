@@ -139,47 +139,24 @@ test('POST save ignores a non-integer expectedRevision (documented leniency)', a
   assert.equal(res.status, 200)
 })
 
-test('POST save rejects a toolFilter naming unregistered tools (400 invalid-tool-name)', async () => {
+test('POST save accepts any toolFilter names — delegate-time restrict is the enforcement', async () => {
+  // The harness keeps every model-facing tool on the agent plane (global layer
+  // empty by design), and the set a child inherits depends on the parent at
+  // delegate time; no host-plane probe can enumerate it exactly. tools.restrict
+  // at child composition validates loudly with a precise "known global tools: …"
+  // error, which is the real guard. A save-time pre-check produced false
+  // rejections that broke the settings UI for legitimate deny lists
+  // (0.2.2–0.2.4; removed in 0.2.5).
   const host = hostWith({ knownTools: ['read'] })
-  const bad = await postJson(host.web, {
-    op: 'save',
-    entries: { 'filtered-entry': { ...ENTRY, toolFilter: { deny: ['ghost-tool'] } } },
-  })
-  assert.equal(bad.status, 400)
-  assert.equal(jsonBody(bad)['error'], 'invalid-tool-name')
-  assert.match(String(jsonBody(bad)['message']), /filtered-entry.*ghost-tool/)
-
-  const good = await postJson(host.web, {
-    op: 'save',
-    entries: { 'filtered-entry': { ...ENTRY, toolFilter: { deny: ['read'] } } },
-  })
-  assert.equal(good.status, 200)
-})
-
-test('POST save accepts toolFilter naming agent-plane tools (regression: Settings add card)', async () => {
-  // write/edit/… live on the agent plane, never in the global view, yet a
-  // delegated child inherits them. The save must pass — this is what the
-  // settings UI hits on EVERY add/save while the library carries deny lists.
-  const host = hostWith({ knownTools: ['read'] }) // global registry without write
   const res = await postJson(host.web, {
     op: 'save',
     entries: {
       'reader-role': { ...ENTRY, toolFilter: { deny: ['write', 'edit', 'todo_write'] } },
+      'maybe-typo': { ...ENTRY, toolFilter: { deny: ['ghost-tool'] } },
     },
   })
-  assert.equal(res.status, 200, `agent-plane tool should not be rejected: ${String(jsonBody(res)['message'])}`)
-  assert.equal(jsonBody(res)['ok'], true)
-})
-
-test('POST save defers tool-name validation when no live agent can be probed', async () => {
-  // No agent → the registry view is unknowable; never block, delegation's own
-  // loud validation (tools.restrict) is the backstop.
-  const host = hostWith({ knownTools: ['read'], noAgents: true })
-  const res = await postJson(host.web, {
-    op: 'save',
-    entries: { 'maybe-typo': { ...ENTRY, toolFilter: { deny: ['ghost-tool'] } } },
-  })
   assert.equal(res.status, 200)
+  assert.equal(jsonBody(res)['ok'], true)
 })
 
 test('POST delete removes an entry; invalid delete ids are rejected', async () => {

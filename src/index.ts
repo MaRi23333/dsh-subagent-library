@@ -47,35 +47,6 @@ const LIBRARY_SECTION_ORDER = 116.6
  *  subagent tool defaults to 3 to keep chained delegation bounded. */
 const DEFAULT_MAX_DEPTH = 3
 
-/**
- * Whether `name` is a tool a delegated subagent could legitimately see.
- *
- * dsh-tools keeps per-agent tools (write / edit / todo_write / …) on the agent
- * plane — they are registered through each agent's ctx, NOT the context-global
- * layer — yet every child inherits its parent's composition
- * (`applyChildComposition` → `agentPresets.composeFrom`), so `tools.restrict`
- * admits those names at delegate time. Checking only `ctx.tools.get(name)`
- * (the global view) therefore rejects every legitimate agent-plane name and
- * breaks the settings UI for any library using them. Probe the global view
- * PLUS every live agent's scoped view; a name known in none of them is almost
- * certainly a typo and fails the save before it can become a delegate-time
- * error. With no live agent to probe, accept and let delegation's own loud
- * validation be the backstop — never block the settings page over a name we
- * cannot verify.
- */
-function isKnownToolName(
-  ctx: Context,
-  name: string,
-  liveAgents: () => Array<{ ctx?: unknown }>,
-): boolean {
-  if (ctx.tools.get(name) !== undefined) return true
-  const live = liveAgents()
-  if (live.length === 0) return true
-  // ScopeKey is `object`; the agent contexts are exact scopes for dsh-tools.
-  const scopedTools = ctx.tools as { get(name: string, scope?: unknown): unknown }
-  return live.some((agent) => agent.ctx !== undefined && scopedTools.get(name, agent.ctx) !== undefined)
-}
-
 /** Optional child tool scoping: named tools vanish from the child's prompt AND refuse execution. */
 export interface ToolFilter {
   /** Global tool names the child keeps; everything else is removed. */
@@ -218,14 +189,6 @@ export function apply(ctx: Context, config: Config) {
     } catch (error) {
       settingsFailure = `subagent-library 设置段注册失败：${String(error)}。请检查 $DSH_HOME/settings.yaml 的 subagent-library 段（常见：description 缺失、entries 写成数组、YAML 布尔/字符串误写）。`
     }
-  })
-  /** Live agents, resolved through the inject seam — Cordis property access on
-   *  ctx requires an inject declaration, and the registry service may be absent
-   *  (non-agent hosts, headless config saves); fail open to `[]`. */
-  let liveAgents: (() => Array<{ ctx?: unknown }>) = () => []
-  ctx.inject(['agents'], (actx: Context) => {
-    const registry = (actx as { agents?: { list(): Array<{ ctx?: unknown }> } }).agents
-    liveAgents = () => registry?.list() ?? []
   })
   /** Library entries restricted to schema-consistent ids: a hand-written key
    *  like `k3_reviewer` passes z.dict (any string key) but can never be
@@ -397,20 +360,15 @@ export function apply(ctx: Context, config: Config) {
             }
             // Validate against the plugin schema before persisting.
             Config({ ...config, entries: candidate as Record<string, Entry> })
-            // A toolFilter naming a tool no real agent could see makes every
-            // delegation of that entry fail (tools.restrict validates loudly);
-            // reject the save instead of persisting a time bomb. The universe
-            // is global tools + live agents' scoped views (see isKnownToolName).
-            for (const [id, entry] of Object.entries(candidate)) {
-              const filter = (entry as Entry).toolFilter
-              if (filter === undefined) continue
-              for (const name of [...(filter.allow ?? []), ...(filter.deny ?? [])]) {
-                if (!isKnownToolName(ctx, name, liveAgents)) {
-                  sendJson(res, 400, { ok: false, error: 'invalid-tool-name', message: `条目 "${id}" 的 toolFilter 引用了未注册的工具 "${name}"` })
-                  return
-                }
-              }
-            }
+            // Note: toolFilter names are NOT pre-checked against the tool
+            // registry. The harness keeps every model-facing tool on the agent
+            // plane (the global layer is empty by design — dsh-agent-presets),
+            // and the set a delegated child inherits depends on the parent at
+            // delegate time; no host-plane probe can enumerate it exactly.
+            // `tools.restrict` at child composition validates loudly with a
+            // precise "known global tools: …" error, which is the real guard.
+            // An early check here only produced false rejections that broke
+            // the settings UI for legitimate deny lists (0.2.2–0.2.4).
             // Wholesale-replace the `entries` map: the editor sends a COMPLETE
             // snapshot (fields the user cleared are absent, which is exactly
             // how a removal is expressed), while settings `update` deep-merges

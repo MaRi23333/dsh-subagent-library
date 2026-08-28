@@ -72,7 +72,7 @@ Entry fields:
 | `subagentProvider` | no | **Subagent transport** (a `ctx.subagents` provider such as `spawn`); defaults to the plugin-level default `spawn` |
 | `maxTokens` | no | Subagent output cap |
 | `persona` | no | Subagent system prompt. Personas go through strict `{{…}}` template interpolation (same semantics as deployment personas) — an unregistered variable (e.g. `{{user}}`) fails child activation |
-| `toolFilter` | no | `allow`/`deny` tool-name lists (deny write-class tools for read-only roles; every name must be a registered tool or the save is rejected). **Read-only/restricted roles should also deny `list_subagents`/`delegate`** so children are not taught by the global prompt to re-delegate in a chain |
+| `toolFilter` | no | `allow`/`deny` tool-name lists (deny write-class tools for read-only roles). **Read-only/restricted roles should also deny `list_subagents`/`delegate`** so children are not taught by the global prompt to re-delegate in a chain. Names must be tools a child can see — a misspelled name fails loudly at the **first delegation** (the error lists the known tools); saves are not pre-validated |
 | `maxDepth` | no | Delegation depth cap; **when unset, defaults to 3 when the transport supports depthLimit** (aligned with the official subagent tool to prevent chained recursive delegation; the harness itself has no global depth cap). Transports without depthLimit stay uncapped |
 | `backgroundMode` | no | `one-shot` (default) / `continuable` (resumable) |
 
@@ -111,9 +111,9 @@ npx @deepseek-ai/dsh plugin --profile web add /absolute/path/to/dsh-subagent-lib
 A **Subagent Library** card appears under Settings: visually add/edit/remove entries
 (description / provider / model / subagentProvider transport / maxTokens / denied tools /
 depth / background mode / persona), written back to `$DSH_HOME/settings.yaml`, hot-reloaded.
-The add card takes the common fields (ID / description / provider / model / transport /
-output cap); the rest (denied tools / depth / background mode / persona) are edited inside
-the entry card.
+The add card offers the same fields as an entry card (ID / description / provider / model /
+transport / output cap / denied tools / depth / background mode / persona), so a role is
+fully configured in one step.
 
 > **Security note:** the roster settings endpoint (`/subagent-library/api`) follows the
 > DSH Web Host's local trust boundary — the plugin itself adds no separate authentication

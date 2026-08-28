@@ -119,22 +119,7 @@ export interface HostOptions extends SettingsOptions {
   baseEntries?: Record<string, Entry>
   /** Tool names the fake registry knows; anything else resolves to undefined. */
   knownTools?: string[]
-  /**
-   * Fake live agents, each with the tool names visible in its scoped view.
-   * Mirrors the real harness: per-agent (agent-plane) tools like write/edit
-   * live on the agent ctx, not the global layer. Defaults to one agent with
-   * the standard agent-plane tool set.
-   */
-  agents?: Array<{ tools?: string[] }>
-  /** Simulate a host with no live agent to probe (save defers to delegate-time validation). */
-  noAgents?: boolean
 }
-
-/** The standard agent-plane tool names an agent preset composes for itself. */
-export const AGENT_PLANE_TOOLS = [
-  'write', 'edit', 'todo_write', 'create_goal', 'update_goal',
-  'subagent', 'subagent_fork', 'send_message', 'interrupt_agent', 'workflow', 'ralph',
-]
 
 export interface MockHost {
   web: MockWeb
@@ -154,12 +139,6 @@ export function makeHost(options: HostOptions = {}): MockHost {
   const settings = makeSettings(options)
   let settingsCb: ((sctx: unknown) => void) | undefined
 
-  // Fake live agents (default: one agent composing the standard agent-plane
-  // tools) whose ctx serve as the scoped view key for tools.get(name, scope).
-  const agents = options.noAgents
-    ? []
-    : (options.agents ?? [{ tools: AGENT_PLANE_TOOLS }])
-
   const ctx = {
     inject(deps: string[], cb: (ictx: unknown) => void): void {
       if (deps.includes('settings')) {
@@ -168,24 +147,13 @@ export function makeHost(options: HostOptions = {}): MockHost {
       }
       if (deps.includes('webServer')) {
         cb({ webServer: web, effect: (fn: () => unknown) => fn() })
-        return
-      }
-      if (deps.includes('agents')) {
-        // Mirrors the real Cordis seam: the agents registry is only reachable
-        // through inject — a bare `ctx.agents` property access does NOT work
-        // (the real host throws "cannot get property agents without inject").
-        cb({ agents: { list: () => agents.map((agent) => ({ ctx: agent })) } })
       }
     },
     tools: {
       register: (tool: { name: string; execute: (args: never, exec: never) => Promise<unknown> }) => {
         tools.set(tool.name, tool)
       },
-      get: (name: string, scope?: unknown) => {
-        if (scope === undefined) return knownTools.has(name) ? { name } : undefined
-        const scoped = scope as { tools?: string[] }
-        return (scoped.tools ?? []).includes(name) ? { name } : undefined
-      },
+      get: (name: string) => (knownTools.has(name) ? { name } : undefined),
     },
     systemPrompt: { section: () => {} },
     subagents: {
