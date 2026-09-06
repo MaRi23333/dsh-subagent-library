@@ -9,7 +9,7 @@
 <p align="center">
   <img src="https://img.shields.io/github/actions/workflow/status/MaRi23333/dsh-subagent-library/ci.yml?style=flat-square&label=CI" alt="CI" />
   <img src="https://img.shields.io/github/license/MaRi23333/dsh-subagent-library?style=flat-square" alt="License: MIT" />
-  <img src="https://img.shields.io/badge/DeepSeek%20Harness-0.1.1--rc.1-4d6bfe?style=flat-square" alt="DeepSeek Harness 0.1.1-rc.1" />
+  <img src="https://img.shields.io/badge/DeepSeek%20Harness-0.1.2--rc.1-4d6bfe?style=flat-square" alt="DeepSeek Harness 0.1.2-rc.1" />
 </p>
 
 ## Overview
@@ -135,7 +135,7 @@ pnpm run typecheck
 pnpm run build   # host: lib/index.js; client: lib/client.js
 ```
 
-- Dev dependencies are pinned to DSH `0.1.0-rc.6` (see package.json devDependencies); verified compatible up to `0.1.1-rc.1`. If the interfaces drift on other versions, adjust against the corresponding tag of the [deepseek-harness repo](https://github.com/deepseek-ai/deepseek-harness).
+- Dev dependencies remain pinned to DSH `0.1.0-rc.6` (see package.json devDependencies); the user has verified the plugin on the latest DSH `0.1.2-rc.1`. If the interfaces drift on other versions, adjust against the corresponding tag of the [deepseek-harness repo](https://github.com/deepseek-ai/deepseek-harness).
 
 ## License
 

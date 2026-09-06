@@ -9,7 +9,7 @@
 <p align="center">
   <img src="https://img.shields.io/github/actions/workflow/status/MaRi23333/dsh-subagent-library/ci.yml?style=flat-square&label=CI" alt="CI" />
   <img src="https://img.shields.io/github/license/MaRi23333/dsh-subagent-library?style=flat-square" alt="License: MIT" />
-  <img src="https://img.shields.io/badge/DeepSeek%20Harness-0.1.1--rc.1-4d6bfe?style=flat-square" alt="DeepSeek Harness 0.1.1-rc.1" />
+  <img src="https://img.shields.io/badge/DeepSeek%20Harness-0.1.2--rc.1-4d6bfe?style=flat-square" alt="DeepSeek Harness 0.1.2-rc.1" />
 </p>
 
 > **English:** dsh-subagent-library is a named subagent roster plugin for the
@@ -134,7 +134,7 @@ pnpm run typecheck
 pnpm run build   # host: lib/index.js；client: lib/client.js
 ```
 
-- 开发依赖锁定 DSH `0.1.0-rc.6`（见 package.json devDependencies），实机验证兼容至 `0.1.1-rc.1`；其他版本如接口漂移请对照 [deepseek-harness 仓库](https://github.com/deepseek-ai/deepseek-harness) 相应 tag 调整。
+- 开发依赖仍锁定 DSH `0.1.0-rc.6`（见 package.json devDependencies），已由用户在最新 DSH `0.1.2-rc.1` 实际验证正常；其他版本如接口漂移请对照 [deepseek-harness 仓库](https://github.com/deepseek-ai/deepseek-harness) 相应 tag 调整。
 
 ## License
 
