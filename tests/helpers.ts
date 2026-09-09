@@ -117,8 +117,16 @@ export function makeSettings(options: SettingsOptions = {}): MockSettings {
 export interface HostOptions extends SettingsOptions {
   /** Entries baked into the plugin base config (the `value` layer). */
   baseEntries?: Record<string, Entry>
-  /** Tool names the fake registry knows; anything else resolves to undefined. */
+  /** Tool names the fake registry knows (visible in a scope view). */
   knownTools?: string[]
+  /**
+   * Names `restrict()` would admit (global + inherited). Defaults to
+   * `knownTools`; set it narrower to model scope-local tools — visible to the
+   * agent but NOT restrictable (the official `subagent` tool in DSH 0.1.2-rc.1).
+   */
+  restrictableTools?: string[]
+  /** Omit `tools.view()` to exercise the visibility fallback path. */
+  noToolView?: boolean
   /** Subagent transport providers the fake registry knows (default: none). */
   subagentProviders?: string[]
 }
@@ -140,6 +148,7 @@ export function makeHost(options: HostOptions = {}): MockHost {
   const web = makeWeb()
   const tools: MockHost['tools'] = new Map()
   const knownTools = new Set(options.knownTools ?? [])
+  const restrictableTools = new Set(options.restrictableTools ?? options.knownTools ?? [])
   const settings = makeSettings(options)
   const subagentStarts: MockHost['subagentStarts'] = []
   let settingsCb: ((sctx: unknown) => void) | undefined
@@ -171,9 +180,12 @@ export function makeHost(options: HostOptions = {}): MockHost {
       register: (tool: { name: string; execute: (args: never, exec: never) => Promise<unknown> }) => {
         tools.set(tool.name, tool)
       },
-      // Scope is accepted but the same fake catalog backs every view: tests only
-      // need "this name is visible / not visible".
+      // Visible catalog: tests only need "this name is visible / not visible".
       get: (name: string, _scope?: unknown) => (knownTools.has(name) ? { name } : undefined),
+      // restrictableNames: the set restrict() admits for a scope.
+      ...(options.noToolView === true
+        ? {}
+        : { view: (_scope?: unknown) => ({ restrictableNames: restrictableTools }) }),
     },
     systemPrompt: { section: () => {} },
     subagents: {

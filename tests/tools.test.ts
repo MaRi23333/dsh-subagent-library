@@ -75,11 +75,10 @@ test('delegate reports an unregistered transport before doing any work', async (
   )
 })
 
-test('delegate drops toolFilter names the calling session cannot see', async () => {
+test('delegate drops toolFilter names the calling session cannot restrict', async () => {
   // restrict() fails the WHOLE filter on a name the child cannot inherit, and a
   // roster entry is shared by every session — so a fixed deny list must not be
-  // able to break delegation (real case: deny lists carrying `subagent` in a
-  // session whose composition never mounts it).
+  // able to break delegation (real case: deny lists carrying `subagent`).
   const host = makeHost({
     knownTools: ['write'],
     subagentProviders: ['spawn'],
@@ -94,6 +93,46 @@ test('delegate drops toolFilter names the calling session cannot see', async () 
 
   assert.deepEqual(result['droppedTools'], ['subagent'])
   assert.equal(host.subagentStarts.length, 1)
+  assert.deepEqual(host.subagentStarts[0]?.request['toolFilter'], { deny: ['write'] })
+})
+
+test('delegate drops scope-local names that are visible but not restrictable', async () => {
+  // The real DSH 0.1.2-rc.1 case: the official `subagent` tool lives on each
+  // agent's OWN layer, so it is visible to the caller yet rejected by
+  // restrict() as scope-local. Visibility is not the predicate — the
+  // restrictable set is.
+  const host = makeHost({
+    knownTools: ['write', 'subagent'],
+    restrictableTools: ['write'],
+    subagentProviders: ['spawn'],
+    baseEntries: {
+      reviewer: { description: 'fake', toolFilter: { deny: ['write', 'subagent'] } },
+    },
+  })
+  const result = (await tool(host, 'delegate').execute(
+    { library_id: 'reviewer', prompt: 'x' },
+    { agent: { fake: 'parent', ctx: { fake: 'scope' } }, signal: new AbortController().signal },
+  )) as Record<string, unknown>
+
+  assert.deepEqual(result['droppedTools'], ['subagent'])
+  assert.deepEqual(host.subagentStarts[0]?.request['toolFilter'], { deny: ['write'] })
+})
+
+test('delegate falls back to visibility when the registry has no view()', async () => {
+  const host = makeHost({
+    knownTools: ['write'],
+    noToolView: true,
+    subagentProviders: ['spawn'],
+    baseEntries: {
+      reviewer: { description: 'fake', toolFilter: { deny: ['write', 'subagent'] } },
+    },
+  })
+  const result = (await tool(host, 'delegate').execute(
+    { library_id: 'reviewer', prompt: 'x' },
+    { agent: { fake: 'parent', ctx: { fake: 'scope' } }, signal: new AbortController().signal },
+  )) as Record<string, unknown>
+
+  assert.deepEqual(result['droppedTools'], ['subagent'])
   assert.deepEqual(host.subagentStarts[0]?.request['toolFilter'], { deny: ['write'] })
 })
 

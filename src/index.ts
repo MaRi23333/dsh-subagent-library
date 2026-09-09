@@ -163,17 +163,18 @@ type DelegateResult = {
 }
 
 /**
- * Drop toolFilter names the CALLING session cannot see.
+ * Drop toolFilter names the CALLING session cannot restrict.
  *
  * `ctx.tools.restrict` validates against the child's inherited surface (global
  * layer + ancestors) and fails the WHOLE filter on one name it cannot admit —
  * unknown names and scope-local names included. A roster entry is shared by
  * every session, so a fixed deny list breaks delegation in any session whose
  * composition lacks one of the names (real case: deny lists carrying
- * `subagent`/`subagent_fork`/`workflow` in sessions that never mount them).
- * Names unknown to the caller's scope are dropped — restrict could not have
- * removed them anyway — and reported in the delegate result instead of failing
- * the whole delegation.
+ * `subagent` — a per-agent scope-local tool in DSH 0.1.2-rc.1 — or tools a
+ * preset never mounts). Names outside the caller's restrictable set are dropped
+ * (restrict could not have removed them anyway, and the child never inherits
+ * the parent's own registrations) and reported in the delegate result instead
+ * of failing the whole delegation.
  * @param scope - the CALLING AGENT (dsh-tools' scope key), not its Context.
  */
 function sanitizeToolFilter(
@@ -182,8 +183,19 @@ function sanitizeToolFilter(
   scope: unknown,
 ): { filter: ToolFilter | undefined, dropped: string[] } {
   if (filter === undefined) return { filter: undefined, dropped: [] }
-  const tools = ctx.tools as unknown as { get(name: string, scope?: unknown): unknown }
-  const known = (name: string): boolean => tools.get(name, scope) !== undefined
+  const tools = ctx.tools as unknown as {
+    get(name: string, scope?: unknown): unknown
+    /** Present on dsh-tools' runtime instance; absent from its public types. */
+    view?(scope?: unknown): { restrictableNames?: Set<string> } | undefined
+  }
+  // restrict() admits exactly the child's inherited names, which equal the
+  // caller's own restrictableNames: the child binds to the caller's standing
+  // mount, so both chains are the same. Prefer that exact set and fall back to
+  // visibility only if an older registry lacks `view()`.
+  const restrictable = tools.view?.(scope)?.restrictableNames
+  const known = restrictable !== undefined
+    ? (name: string): boolean => restrictable.has(name)
+    : (name: string): boolean => tools.get(name, scope) !== undefined
   const keep = (list: string[] | undefined): string[] | undefined => list?.filter(known)
   const allow = keep(filter.allow)
   const deny = keep(filter.deny)
