@@ -1,6 +1,6 @@
 {
   "name": "dsh-subagent-library",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "description": "Named subagent library for DeepSeek Harness: a settings-driven roster of role subagents (model + persona + tool filter), exposed to every session through the list_subagents and delegate tools, a /subagent command, and a Settings page.",
   "keywords": [
     "deepseek-harness",

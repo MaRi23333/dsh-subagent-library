@@ -13,6 +13,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import { LibrarySettings, type LibrarySettingsInjected } from './LibrarySettings.tsx'
+import { decorateSettingsNavIcon } from './nav-icon.ts'
 import { en, zh } from './locales.ts'
 
 const NS = 'subagent-library'
@@ -129,4 +130,6 @@ export function apply(ctx: ClientContext): void {
     label: () => '子代理库',
     inject: (): LibrarySettingsInjected => ({ readView, writeView, subscribeRefresh }),
   }, LibrarySettings))
+
+  decorateSettingsNavIcon(ctx)
 }
