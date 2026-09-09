@@ -158,6 +158,47 @@ type DelegateResult = {
   output?: JsonValue[]
   jobId?: string
   subagentId?: string
+  /** toolFilter names this calling session cannot see, dropped before delegation. */
+  droppedTools?: string[]
+}
+
+/**
+ * Drop toolFilter names the CALLING session cannot see.
+ *
+ * `ctx.tools.restrict` validates against the child's inherited surface (global
+ * layer + ancestors) and fails the WHOLE filter on one name it cannot admit —
+ * unknown names and scope-local names included. A roster entry is shared by
+ * every session, so a fixed deny list breaks delegation in any session whose
+ * composition lacks one of the names (real case: deny lists carrying
+ * `subagent`/`subagent_fork`/`workflow` in sessions that never mount them).
+ * Names unknown to the caller's scope are dropped — restrict could not have
+ * removed them anyway — and reported in the delegate result instead of failing
+ * the whole delegation.
+ * @param scope - the CALLING AGENT (dsh-tools' scope key), not its Context.
+ */
+function sanitizeToolFilter(
+  ctx: Context,
+  filter: ToolFilter | undefined,
+  scope: unknown,
+): { filter: ToolFilter | undefined, dropped: string[] } {
+  if (filter === undefined) return { filter: undefined, dropped: [] }
+  const tools = ctx.tools as unknown as { get(name: string, scope?: unknown): unknown }
+  const known = (name: string): boolean => tools.get(name, scope) !== undefined
+  const keep = (list: string[] | undefined): string[] | undefined => list?.filter(known)
+  const allow = keep(filter.allow)
+  const deny = keep(filter.deny)
+  const dropped = [...(filter.allow ?? []), ...(filter.deny ?? [])].filter((name) => !known(name))
+  // Presence is preserved for `allow` — an empty allow list is a deliberate
+  // "the child keeps no global tools" — while an empty deny list is a no-op and
+  // is dropped so a fully sanitized filter does not travel at all.
+  const next: ToolFilter = {
+    ...(allow !== undefined ? { allow } : {}),
+    ...(deny !== undefined && deny.length > 0 ? { deny } : {}),
+  }
+  return {
+    filter: next.allow === undefined && next.deny === undefined ? undefined : next,
+    dropped,
+  }
 }
 
 export function apply(ctx: Context, config: Config) {
@@ -483,16 +524,24 @@ export function apply(ctx: Context, config: Config) {
         },
         additionalProperties: true,
       },
-      render: (_args, value) => [{
-        type: 'text',
-        text: value.kind === 'background'
+      render: (_args, value) => {
+        const dropped = Array.isArray(value.droppedTools)
+          ? value.droppedTools.filter((name): name is string => typeof name === 'string')
+          : []
+        const text = value.kind === 'background'
           ? `started background subagent task ${value.jobId}`
           : value.kind === 'continuable'
             ? `started subagent ${value.subagentId}`
             : value.kind === 'foreground'
               ? outputValueText(value.output ?? [])
-              : JSON.stringify(value),
-      }],
+              : JSON.stringify(value)
+        return [{
+          type: 'text',
+          text: text + (dropped.length > 0
+            ? `\n（本会话不可见、已忽略的工具名：${dropped.join(', ')}）`
+            : ''),
+        }]
+      },
     },
     isConcurrencySafe: () => true,
     async execute(args, exec): Promise<DelegateResult> {
@@ -529,6 +578,13 @@ export function apply(ctx: Context, config: Config) {
       // after the red-team review).
       const maxDepth = entry.maxDepth ?? (transport.capabilities.depthLimit ? DEFAULT_MAX_DEPTH : undefined)
       if (maxDepth !== undefined) assertSubagentMaxDepth(maxDepth)
+      // Resolve toolFilter names against the CALLING session before delegating:
+      // restrict() fails the whole filter on any name the child cannot inherit
+      // (unknown, or scope-local to this parent), and one shared roster entry
+      // would then fail per session. The scope key is the AGENT object itself
+      // (dsh-tools resolves views with `exec.agent`; dsh-scope tags it via
+      // `ctx[kScope]`), never the agent's Context. See sanitizeToolFilter.
+      const { filter: toolFilter, dropped: droppedTools } = sanitizeToolFilter(ctx, entry.toolFilter, parent)
       // The one-shot capability flags (depthLimit/persona/toolFilter) describe
       // ONLY the one-shot `start` path; a continuable child is composed by the
       // continuation manager itself (persona/toolFilter applied on activation,
@@ -543,7 +599,7 @@ export function apply(ctx: Context, config: Config) {
         if (entry.toolFilter !== undefined && entry.toolFilter.allow === undefined && entry.toolFilter.deny === undefined) {
           throw new Error(`delegate: entry "${args.library_id}" names a toolFilter with neither allow nor deny`)
         }
-        if (entry.toolFilter !== undefined && !transport.capabilities.toolFilter) {
+        if (toolFilter !== undefined && !transport.capabilities.toolFilter) {
           throw new Error(`delegate: transport "${subagentProviderName}" cannot apply a tool filter (no toolFilter capability)`)
         }
       }
@@ -563,9 +619,10 @@ export function apply(ctx: Context, config: Config) {
         parent,
         ...(agentOptions !== undefined ? { agentOptions } : {}),
         ...(entry.persona !== undefined ? { persona: entry.persona } : {}),
-        ...(entry.toolFilter !== undefined ? { toolFilter: entry.toolFilter } : {}),
+        ...(toolFilter !== undefined ? { toolFilter } : {}),
         ...(maxDepth !== undefined ? { maxDepth } : {}),
       }
+      const droppedNote = droppedTools.length > 0 ? { droppedTools } : {}
 
       const runInBackground = args.run_in_background === true || continuable
       if (runInBackground) {
@@ -578,6 +635,7 @@ export function apply(ctx: Context, config: Config) {
               request,
               signal: exec.signal,
             })).childId,
+            ...droppedNote,
           }
         }
         const jobs = ctx.get('jobs') as JobRunner | undefined
@@ -603,12 +661,16 @@ export function apply(ctx: Context, config: Config) {
               }
             },
           }),
+          ...droppedNote,
         }
       }
-      return settleForegroundRun(await ctx.subagents.start(subagentProviderName, {
-        ...request,
-        signal: exec.signal,
-      }))
+      return {
+        ...(await settleForegroundRun(await ctx.subagents.start(subagentProviderName, {
+          ...request,
+          signal: exec.signal,
+        }))),
+        ...droppedNote,
+      }
     },
   }))
 

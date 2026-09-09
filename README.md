@@ -79,7 +79,7 @@ subagent-library:
 | `subagentProvider` | 否 | **子代理传输层**（`spawn` 等 `ctx.subagents` provider）；默认取插件级默认 `spawn` |
 | `maxTokens` | 否 | 子代理输出上限 |
 | `persona` | 否 | 子代理角色提示词。注意 persona 走严格的 `{{…}}` 模板插值（与部署 persona 同语义）——出现未注册的变量（如 `{{user}}`）会让子代理激活失败 |
-| `toolFilter` | 否 | `allow`/`deny` 工具名单（只读角色用 deny 禁写类工具）。**只读/受限角色建议把 `list_subagents`/`delegate` 也列入 deny**，防止子代理被全局提示词教去链式再派活。名单按**委派时实际父会话**的工具组合校验：名字不在该组合时委派会明确报错（并列出可用工具名）——前台与可续聊在委派当场报出，后台 one-shot 的失败显示在任务结果中；保存阶段不做校验 |
+| `toolFilter` | 否 | `allow`/`deny` 工具名单（只读角色用 deny 禁写类工具）。**只读/受限角色建议把 `list_subagents`/`delegate` 也列入 deny**，防止子代理被全局提示词教去链式再派活。名单在**委派时按调用方会话**解析：本会话看不到的名字会被忽略并在派活结果里提示（一个共享条目不会因为某个会话缺该工具而整次派活失败）；保存阶段不做校验 |
 | `maxDepth` | 否 | 委派深度上限；**缺省 = 传输层支持 depthLimit 时默认 3**（与官方 subagent 工具对齐，防链式递归派活；harness 自身无全局深度上限），不支持 depthLimit 的传输层则不设上限 |
 | `backgroundMode` | 否 | `one-shot`（默认）/ `continuable`（可续聊） |
 

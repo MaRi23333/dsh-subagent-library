@@ -119,12 +119,16 @@ export interface HostOptions extends SettingsOptions {
   baseEntries?: Record<string, Entry>
   /** Tool names the fake registry knows; anything else resolves to undefined. */
   knownTools?: string[]
+  /** Subagent transport providers the fake registry knows (default: none). */
+  subagentProviders?: string[]
 }
 
 export interface MockHost {
   web: MockWeb
   tools: Map<string, { name: string; execute: (args: never, exec: never) => Promise<unknown> }>
   settings: MockSettings
+  /** Every `subagents.start(provider, request)` the plugin performed. */
+  subagentStarts: Array<{ provider: string, request: Record<string, unknown> }>
 }
 
 /**
@@ -137,7 +141,21 @@ export function makeHost(options: HostOptions = {}): MockHost {
   const tools: MockHost['tools'] = new Map()
   const knownTools = new Set(options.knownTools ?? [])
   const settings = makeSettings(options)
+  const subagentStarts: MockHost['subagentStarts'] = []
   let settingsCb: ((sctx: unknown) => void) | undefined
+
+  const providerNames = options.subagentProviders ?? []
+  const providers = new Map(providerNames.map((providerName) => [providerName, {
+    capabilities: { depthLimit: true, persona: true, toolFilter: true },
+    start: (name: string, request: Record<string, unknown>) => {
+      subagentStarts.push({ provider: name, request })
+      return {
+        id: 'fake-run',
+        result: Promise.resolve({ stopReason: 'completed', output: [{ type: 'text', text: 'fake child reply' }] }),
+        dispose: () => Promise.resolve(),
+      }
+    },
+  }]))
 
   const ctx = {
     inject(deps: string[], cb: (ictx: unknown) => void): void {
@@ -153,12 +171,20 @@ export function makeHost(options: HostOptions = {}): MockHost {
       register: (tool: { name: string; execute: (args: never, exec: never) => Promise<unknown> }) => {
         tools.set(tool.name, tool)
       },
-      get: (name: string) => (knownTools.has(name) ? { name } : undefined),
+      // Scope is accepted but the same fake catalog backs every view: tests only
+      // need "this name is visible / not visible".
+      get: (name: string, _scope?: unknown) => (knownTools.has(name) ? { name } : undefined),
     },
     systemPrompt: { section: () => {} },
     subagents: {
-      getProvider: () => undefined,
-      list: () => [] as string[],
+      getProvider: (name: string) => providers.get(name),
+      list: () => providerNames,
+      // Service-level entry point: the plugin calls ctx.subagents.start(name, request).
+      start: (name: string, request: Record<string, unknown>) => {
+        const provider = providers.get(name)
+        if (provider === undefined) throw new Error(`fake subagents: no provider "${name}"`)
+        return provider.start(name, request)
+      },
     },
     get: () => undefined,
   }
@@ -167,7 +193,7 @@ export function makeHost(options: HostOptions = {}): MockHost {
   if (settingsCb === undefined) throw new Error('apply() did not register a settings inject callback')
   settingsCb({ settings, effect: (fn: () => unknown) => fn() })
 
-  return { web, tools, settings }
+  return { web, tools, settings, subagentStarts }
 }
 
 export interface ReqOptions {
