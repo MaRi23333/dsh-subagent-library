@@ -137,6 +137,8 @@ export interface MockHost {
   settings: MockSettings
   /** Every `subagents.start(provider, request)` the plugin performed. */
   subagentStarts: Array<{ provider: string, request: Record<string, unknown> }>
+  /** Every scope passed to `tools.view(scope)` — must be the Agent object. */
+  toolViewScopes: unknown[]
 }
 
 /**
@@ -151,6 +153,7 @@ export function makeHost(options: HostOptions = {}): MockHost {
   const restrictableTools = new Set(options.restrictableTools ?? options.knownTools ?? [])
   const settings = makeSettings(options)
   const subagentStarts: MockHost['subagentStarts'] = []
+  const toolViewScopes: MockHost['toolViewScopes'] = []
   let settingsCb: ((sctx: unknown) => void) | undefined
 
   const providerNames = options.subagentProviders ?? []
@@ -185,7 +188,12 @@ export function makeHost(options: HostOptions = {}): MockHost {
       // restrictableNames: the set restrict() admits for a scope.
       ...(options.noToolView === true
         ? {}
-        : { view: (_scope?: unknown) => ({ restrictableNames: restrictableTools }) }),
+        : {
+            view: (scope?: unknown) => {
+              toolViewScopes.push(scope)
+              return { restrictableNames: restrictableTools }
+            },
+          }),
     },
     systemPrompt: { section: () => {} },
     subagents: {
@@ -205,7 +213,7 @@ export function makeHost(options: HostOptions = {}): MockHost {
   if (settingsCb === undefined) throw new Error('apply() did not register a settings inject callback')
   settingsCb({ settings, effect: (fn: () => unknown) => fn() })
 
-  return { web, tools, settings, subagentStarts }
+  return { web, tools, settings, subagentStarts, toolViewScopes }
 }
 
 export interface ReqOptions {

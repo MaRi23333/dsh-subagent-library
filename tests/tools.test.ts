@@ -11,6 +11,7 @@ import { makeHost, type MockHost } from './helpers.ts'
 
 interface RegisteredTool {
   execute: (args: Record<string, unknown>, exec: Record<string, unknown>) => Promise<unknown>
+  output?: { render?: (args: unknown, value: Record<string, unknown>) => Array<{ type: string, text: string }> }
 }
 
 function tool(host: MockHost, name: string): RegisteredTool {
@@ -19,10 +20,13 @@ function tool(host: MockHost, name: string): RegisteredTool {
   return registered as unknown as RegisteredTool
 }
 
-const EXEC = { agent: { fake: 'parent-agent' }, signal: new AbortController().signal }
+/** The calling agent object — dsh-tools' scope key (never its Context). */
+const AGENT = { fake: 'parent-agent', ctx: { fake: 'scope' } }
+const EXEC = { agent: AGENT, signal: new AbortController().signal }
 
 test('list_subagents returns the filtered catalog with a toolFilter summary', async () => {
   const host = makeHost({
+    knownTools: ['write', 'edit'],
     baseEntries: {
       reader: {
         description: 'fake read-only role',
@@ -88,12 +92,16 @@ test('delegate drops toolFilter names the calling session cannot restrict', asyn
   })
   const result = (await tool(host, 'delegate').execute(
     { library_id: 'reviewer', prompt: 'x' },
-    { agent: { fake: 'parent', ctx: { fake: 'scope' } }, signal: new AbortController().signal },
+    EXEC,
   )) as Record<string, unknown>
 
-  assert.deepEqual(result['droppedTools'], ['subagent'])
+  // `subagent` is invisible here → reported as "does not exist in this session".
+  assert.match(String((result['droppedTools'] as string[])[0]), /^subagent（本会话不存在）/)
   assert.equal(host.subagentStarts.length, 1)
   assert.deepEqual(host.subagentStarts[0]?.request['toolFilter'], { deny: ['write'] })
+  // The scope passed to tools.view() is the AGENT object, never its Context
+  // (passing agent.ctx silently resolves no layers — the cdb128d bug).
+  assert.equal(host.toolViewScopes[0], AGENT)
 })
 
 test('delegate drops scope-local names that are visible but not restrictable', async () => {
@@ -111,16 +119,19 @@ test('delegate drops scope-local names that are visible but not restrictable', a
   })
   const result = (await tool(host, 'delegate').execute(
     { library_id: 'reviewer', prompt: 'x' },
-    { agent: { fake: 'parent', ctx: { fake: 'scope' } }, signal: new AbortController().signal },
+    EXEC,
   )) as Record<string, unknown>
 
-  assert.deepEqual(result['droppedTools'], ['subagent'])
+  assert.match(String((result['droppedTools'] as string[])[0]), /^subagent（本会话专属工具/)
   assert.deepEqual(host.subagentStarts[0]?.request['toolFilter'], { deny: ['write'] })
 })
 
-test('delegate falls back to visibility when the registry has no view()', async () => {
+test('delegate falls back to visibility when the registry has no view() (documented gap)', async () => {
+  // Characterization test: without view() the sanitizer can only use visibility,
+  // so a scope-local name survives and restrict() would reject the whole filter
+  // again — the pre-0.2.7 loud failure. Documented, not silently "fixed".
   const host = makeHost({
-    knownTools: ['write'],
+    knownTools: ['write', 'subagent'],
     noToolView: true,
     subagentProviders: ['spawn'],
     baseEntries: {
@@ -129,11 +140,56 @@ test('delegate falls back to visibility when the registry has no view()', async 
   })
   const result = (await tool(host, 'delegate').execute(
     { library_id: 'reviewer', prompt: 'x' },
-    { agent: { fake: 'parent', ctx: { fake: 'scope' } }, signal: new AbortController().signal },
+    EXEC,
   )) as Record<string, unknown>
 
-  assert.deepEqual(result['droppedTools'], ['subagent'])
-  assert.deepEqual(host.subagentStarts[0]?.request['toolFilter'], { deny: ['write'] })
+  assert.equal(result['droppedTools'], undefined)
+  assert.deepEqual(host.subagentStarts[0]?.request['toolFilter'], { deny: ['write', 'subagent'] })
+  assert.deepEqual(host.toolViewScopes, [])
+})
+
+test('delegate refuses an allow list that this session cannot apply at all', async () => {
+  // Dropping an allow name makes the filter STRICTER; dropping every allow name
+  // would leave `allow: []` = a child with no global tools. Fail loudly instead.
+  const host = makeHost({
+    knownTools: ['read'],
+    restrictableTools: ['read'],
+    subagentProviders: ['spawn'],
+    baseEntries: {
+      reader: { description: 'fake', toolFilter: { allow: ['write'] } },
+    },
+  })
+  await assert.rejects(
+    () => tool(host, 'delegate').execute({ library_id: 'reader', prompt: 'x' }, EXEC),
+    /allow list names no tool this session can apply.*write/s,
+  )
+  assert.equal(host.subagentStarts.length, 0)
+})
+
+test('delegate result render carries the ignored-name note', async () => {
+  const host = makeHost({
+    knownTools: ['write'],
+    subagentProviders: ['spawn'],
+    baseEntries: {
+      reviewer: { description: 'fake', toolFilter: { deny: ['write', 'ghost-tool'] } },
+    },
+  })
+  const delegate = tool(host, 'delegate')
+  const result = (await delegate.execute({ library_id: 'reviewer', prompt: 'x' }, EXEC)) as Record<string, unknown>
+  const rendered = delegate.output?.render?.({}, result) ?? []
+  assert.match(rendered.map((block) => block.text).join(''), /已忽略本会话不可用的工具名：ghost-tool（本会话不存在）/)
+})
+
+test('list_subagents summarizes the SANITIZED filter for the calling session', async () => {
+  const host = makeHost({
+    knownTools: ['write', 'subagent'],
+    restrictableTools: ['write'],
+    baseEntries: {
+      reviewer: { description: 'fake', toolFilter: { deny: ['write', 'subagent'] } },
+    },
+  })
+  const rows = (await tool(host, 'list_subagents').execute({}, EXEC)) as Array<Record<string, unknown>>
+  assert.equal(rows[0]?.['toolFilter'], 'deny:[write] 忽略:[subagent]')
 })
 
 test('delegate omits the filter when every toolFilter name is unknown here', async () => {
@@ -146,10 +202,10 @@ test('delegate omits the filter when every toolFilter name is unknown here', asy
   })
   const result = (await tool(host, 'delegate').execute(
     { library_id: 'reviewer', prompt: 'x' },
-    { agent: { fake: 'parent', ctx: { fake: 'scope' } }, signal: new AbortController().signal },
+    EXEC,
   )) as Record<string, unknown>
 
-  assert.deepEqual(result['droppedTools'], ['ghost-tool'])
+  assert.match(String((result['droppedTools'] as string[])[0]), /^ghost-tool（本会话不存在）/)
   assert.equal(host.subagentStarts.length, 1)
   assert.equal(Object.hasOwn(host.subagentStarts[0]?.request ?? {}, 'toolFilter'), false)
 })

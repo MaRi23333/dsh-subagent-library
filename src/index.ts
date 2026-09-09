@@ -162,6 +162,16 @@ type DelegateResult = {
   droppedTools?: string[]
 }
 
+/** One toolFilter name this session cannot apply, with the reason it cannot. */
+interface DroppedToolName {
+  name: string
+  /** `session-local`: visible to the caller but on its OWN layer, so neither
+   *  restrictable nor inherited by children (e.g. the official `subagent` tool
+   *  in DSH 0.1.2-rc.1). `unknown`: nothing in this session knows the name —
+   *  typically a typo or a tool this deployment does not mount. */
+  reason: 'session-local' | 'unknown'
+}
+
 /**
  * Drop toolFilter names the CALLING session cannot restrict.
  *
@@ -175,14 +185,20 @@ type DelegateResult = {
  * (restrict could not have removed them anyway, and the child never inherits
  * the parent's own registrations) and reported in the delegate result instead
  * of failing the whole delegation.
+ *
+ * Dropping a DENY name can only widen the child (the name was unrestrictable,
+ * so the child could never have it removed); dropping every ALLOW name would
+ * leave the child with no global tools at all, which is reported separately as
+ * `allowEmptied` so the caller can fail loudly instead of starting a crippled
+ * child.
  * @param scope - the CALLING AGENT (dsh-tools' scope key), not its Context.
  */
 function sanitizeToolFilter(
   ctx: Context,
   filter: ToolFilter | undefined,
   scope: unknown,
-): { filter: ToolFilter | undefined, dropped: string[] } {
-  if (filter === undefined) return { filter: undefined, dropped: [] }
+): { filter: ToolFilter | undefined, dropped: DroppedToolName[], allowEmptied: boolean } {
+  if (filter === undefined) return { filter: undefined, dropped: [], allowEmptied: false }
   const tools = ctx.tools as unknown as {
     get(name: string, scope?: unknown): unknown
     /** Present on dsh-tools' runtime instance; absent from its public types. */
@@ -191,15 +207,21 @@ function sanitizeToolFilter(
   // restrict() admits exactly the child's inherited names, which equal the
   // caller's own restrictableNames: the child binds to the caller's standing
   // mount, so both chains are the same. Prefer that exact set and fall back to
-  // visibility only if an older registry lacks `view()`.
+  // visibility only if an older registry lacks `view()` (the fallback keeps
+  // scope-local names, i.e. the pre-0.2.7 loud failure returns on that path).
   const restrictable = tools.view?.(scope)?.restrictableNames
-  const known = restrictable !== undefined
-    ? (name: string): boolean => restrictable.has(name)
-    : (name: string): boolean => tools.get(name, scope) !== undefined
-  const keep = (list: string[] | undefined): string[] | undefined => list?.filter(known)
+  const restrictableName = (name: string): boolean => restrictable !== undefined
+    ? restrictable.has(name)
+    : tools.get(name, scope) !== undefined
+  const keep = (list: string[] | undefined): string[] | undefined => list?.filter(restrictableName)
   const allow = keep(filter.allow)
   const deny = keep(filter.deny)
-  const dropped = [...(filter.allow ?? []), ...(filter.deny ?? [])].filter((name) => !known(name))
+  const dropped: DroppedToolName[] = [...(filter.allow ?? []), ...(filter.deny ?? [])]
+    .filter((name) => !restrictableName(name))
+    .map((name) => ({
+      name,
+      reason: restrictable !== undefined && tools.get(name, scope) !== undefined ? 'session-local' : 'unknown',
+    }))
   // Presence is preserved for `allow` — an empty allow list is a deliberate
   // "the child keeps no global tools" — while an empty deny list is a no-op and
   // is dropped so a fully sanitized filter does not travel at all.
@@ -210,6 +232,7 @@ function sanitizeToolFilter(
   return {
     filter: next.allow === undefined && next.deny === undefined ? undefined : next,
     dropped,
+    allowEmptied: filter.allow !== undefined && filter.allow.length > 0 && allow !== undefined && allow.length === 0,
   }
 }
 
@@ -479,24 +502,42 @@ export function apply(ctx: Context, config: Config) {
       render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
     },
     isConcurrencySafe: () => true,
-    async execute() {
+    async execute(_args, exec) {
       if (settingsFailure !== undefined) throw new Error(settingsFailure)
       const lib = resolveConfig()
-      return Object.entries(lib.entries).map(([id, entry]) => ({
-        id,
-        description: entry.description,
-        provider: entry.provider ?? '(session default)',
-        model: entry.model ?? '(session default)',
-        backgroundMode: entry.backgroundMode ?? 'one-shot',
-        ...(entry.toolFilter !== undefined
-          ? {
-              toolFilter: [
-                entry.toolFilter.allow !== undefined ? `allow:[${entry.toolFilter.allow.join(', ')}]` : '',
-                entry.toolFilter.deny !== undefined ? `deny:[${entry.toolFilter.deny.join(', ')}]` : '',
-              ].filter(Boolean).join(' '),
-            }
-          : {}),
-      }))
+      const agent = exec.agent
+      /** The catalog must not advertise a filter this session cannot apply:
+       *  summarize the SANITIZED filter and list what was ignored, so the model
+       *  sees the same tool scope delegation will actually produce. */
+      const filterSummary = (entry: Entry): string | undefined => {
+        if (entry.toolFilter === undefined) return undefined
+        const declared = [
+          entry.toolFilter.allow !== undefined ? `allow:[${entry.toolFilter.allow.join(', ')}]` : '',
+          entry.toolFilter.deny !== undefined ? `deny:[${entry.toolFilter.deny.join(', ')}]` : '',
+        ].filter(Boolean).join(' ')
+        if (agent === undefined) return declared
+        const { filter, dropped } = sanitizeToolFilter(ctx, entry.toolFilter, agent)
+        const effective = filter === undefined
+          ? '(本会话无可应用的名单项)'
+          : [
+              filter.allow !== undefined ? `allow:[${filter.allow.join(', ')}]` : '',
+              filter.deny !== undefined ? `deny:[${filter.deny.join(', ')}]` : '',
+            ].filter(Boolean).join(' ')
+        return dropped.length > 0
+          ? `${effective} 忽略:[${dropped.map((item) => item.name).join(', ')}]`
+          : effective
+      }
+      return Object.entries(lib.entries).map(([id, entry]) => {
+        const summary = filterSummary(entry)
+        return {
+          id,
+          description: entry.description,
+          provider: entry.provider ?? '(session default)',
+          model: entry.model ?? '(session default)',
+          backgroundMode: entry.backgroundMode ?? 'one-shot',
+          ...(summary !== undefined ? { toolFilter: summary } : {}),
+        }
+      })
     },
   }))
 
@@ -550,7 +591,7 @@ export function apply(ctx: Context, config: Config) {
         return [{
           type: 'text',
           text: text + (dropped.length > 0
-            ? `\n（本会话不可见、已忽略的工具名：${dropped.join(', ')}）`
+            ? `\n（已忽略本会话不可用的工具名：${dropped.join('；')}）`
             : ''),
         }]
       },
@@ -596,7 +637,13 @@ export function apply(ctx: Context, config: Config) {
       // would then fail per session. The scope key is the AGENT object itself
       // (dsh-tools resolves views with `exec.agent`; dsh-scope tags it via
       // `ctx[kScope]`), never the agent's Context. See sanitizeToolFilter.
-      const { filter: toolFilter, dropped: droppedTools } = sanitizeToolFilter(ctx, entry.toolFilter, parent)
+      const { filter: toolFilter, dropped, allowEmptied } = sanitizeToolFilter(ctx, entry.toolFilter, parent)
+      const droppedTools = dropped.map((item) => item.reason === 'session-local'
+        ? `${item.name}（本会话专属工具，子代本就继承不到）`
+        : `${item.name}（本会话不存在）`)
+      if (allowEmptied) {
+        throw new Error(`delegate: entry "${args.library_id}" allow list names no tool this session can apply (${droppedTools.join('; ')}) — refusing to start a child with no tools at all`)
+      }
       // The one-shot capability flags (depthLimit/persona/toolFilter) describe
       // ONLY the one-shot `start` path; a continuable child is composed by the
       // continuation manager itself (persona/toolFilter applied on activation,
@@ -611,7 +658,10 @@ export function apply(ctx: Context, config: Config) {
         if (entry.toolFilter !== undefined && entry.toolFilter.allow === undefined && entry.toolFilter.deny === undefined) {
           throw new Error(`delegate: entry "${args.library_id}" names a toolFilter with neither allow nor deny`)
         }
-        if (toolFilter !== undefined && !transport.capabilities.toolFilter) {
+        if (entry.toolFilter !== undefined && !transport.capabilities.toolFilter) {
+          // Keyed on the DECLARED filter, not the sanitized one: a transport that
+          // cannot apply filters must still refuse an entry that asks for one,
+          // even if every name happened to be dropped in this session.
           throw new Error(`delegate: transport "${subagentProviderName}" cannot apply a tool filter (no toolFilter capability)`)
         }
       }
