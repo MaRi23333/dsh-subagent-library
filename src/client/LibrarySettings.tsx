@@ -229,6 +229,10 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
    *  intrinsic width instead of overflowing the settings card (form controls
    *  otherwise keep their default width as a flex minimum). */
   const colStyle = { display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 } as const
+  /** Content-width column for FIXED-width controls (number input, select):
+   *  flex-basis-0 columns ignore their children when distributing width, and
+   *  an overflowing visible-box child paints over the neighbor. */
+  const fixedColStyle = { display: 'flex', alignItems: 'center', gap: 8 } as const
   const labelStyle = { fontSize: 13, opacity: 0.75, minWidth: '72px' } as const
   const inputStyle = {
     flex: 1,
@@ -444,7 +448,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
                   style={inputStyle}
                 />
               </div>
-              <div style={colStyle}>
+              <div style={fixedColStyle}>
                 <span style={labelStyle}>输出上限</span>
                 <input
                   type="number"
@@ -458,7 +462,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
             </div>
 
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-              <div style={colStyle}>
+              <div style={fixedColStyle}>
                 <span style={labelStyle}>深度上限</span>
                 <input
                   type="number"
@@ -468,18 +472,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
                   style={{ ...inputStyle, flex: 'none', width: 84 }}
                 />
               </div>
-              <div style={colStyle}>
-                <span style={labelStyle}>后台模式</span>
-                <select
-                  value={entry.backgroundMode ?? 'one-shot'}
-                  onChange={(event) => setEntries({ ...entries, [id]: { ...entry, backgroundMode: event.target.value as 'one-shot' | 'continuable' } })}
-                  style={{ ...inputStyle, flex: 'none', width: 132 }}
-                >
-                  <option value="one-shot">one-shot</option>
-                  <option value="continuable">continuable</option>
-                </select>
-              </div>
-              <div style={{ ...colStyle, flex: 2 }}>
+              <div style={{ ...colStyle, flex: 1 }}>
                 <span style={labelStyle}>禁用工具</span>
                 <input
                   value={(entry.toolFilter?.deny ?? []).join(', ')}
@@ -507,14 +500,27 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
               </div>
             </div>
 
-            <div style={rowStyle}>
-              <span style={labelStyle}>思考强度</span>
-              <input
-                value={entry.reasoningEffort ?? ''}
-                onChange={(event) => setEntries({ ...entries, [id]: { ...entry, reasoningEffort: event.target.value === '' ? undefined : event.target.value.trim() } })}
-                placeholder="适配器自有值，如 max / high / medium / low（留空随父会话默认）"
-                style={inputStyle}
-              />
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+              <div style={{ ...colStyle, flex: 1 }}>
+                <span style={labelStyle}>思考强度</span>
+                <input
+                  value={entry.reasoningEffort ?? ''}
+                  onChange={(event) => setEntries({ ...entries, [id]: { ...entry, reasoningEffort: event.target.value === '' ? undefined : event.target.value.trim() } })}
+                  placeholder="如 max / high / medium / low（留空随父会话默认）"
+                  style={inputStyle}
+                />
+              </div>
+              <div style={fixedColStyle}>
+                <span style={labelStyle}>后台模式</span>
+                <select
+                  value={entry.backgroundMode ?? 'one-shot'}
+                  onChange={(event) => setEntries({ ...entries, [id]: { ...entry, backgroundMode: event.target.value as 'one-shot' | 'continuable' } })}
+                  style={{ ...inputStyle, flex: 'none', width: 132 }}
+                >
+                  <option value="one-shot">one-shot</option>
+                  <option value="continuable">continuable</option>
+                </select>
+              </div>
             </div>
 
             <div style={rowStyle}>
@@ -566,7 +572,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
             <span style={labelStyle}>传输层</span>
             <input value={newEntry.subagentProvider ?? ''} onChange={(event) => setNewEntry({ ...newEntry, subagentProvider: event.target.value })} placeholder="spawn（默认）" style={inputStyle} />
           </div>
-          <div style={colStyle}>
+          <div style={fixedColStyle}>
             <span style={labelStyle}>输出上限</span>
             <input
               type="number"
@@ -579,7 +585,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
           </div>
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-          <div style={colStyle}>
+          <div style={fixedColStyle}>
             <span style={labelStyle}>深度上限</span>
             <input
               type="number"
@@ -589,18 +595,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
               style={{ ...inputStyle, flex: 'none', width: 84 }}
             />
           </div>
-          <div style={colStyle}>
-            <span style={labelStyle}>后台模式</span>
-            <select
-              value={newEntry.backgroundMode ?? 'one-shot'}
-              onChange={(event) => setNewEntry({ ...newEntry, backgroundMode: event.target.value as 'one-shot' | 'continuable' })}
-              style={{ ...inputStyle, flex: 'none', width: 132 }}
-            >
-              <option value="one-shot">one-shot</option>
-              <option value="continuable">continuable</option>
-            </select>
-          </div>
-          <div style={{ ...colStyle, flex: 2 }}>
+          <div style={{ ...colStyle, flex: 1 }}>
             <span style={labelStyle}>禁用工具</span>
             <input
               value={(newEntry.toolFilter?.deny ?? []).join(', ')}
@@ -622,14 +617,27 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
             />
           </div>
         </div>
-        <div style={rowStyle}>
-          <span style={labelStyle}>思考强度</span>
-          <input
-            value={newEntry.reasoningEffort ?? ''}
-            onChange={(event) => setNewEntry({ ...newEntry, reasoningEffort: event.target.value === '' ? undefined : event.target.value.trim() })}
-            placeholder="适配器自有值，如 max / high / medium / low（留空随父会话默认）"
-            style={inputStyle}
-          />
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+          <div style={{ ...colStyle, flex: 1 }}>
+            <span style={labelStyle}>思考强度</span>
+            <input
+              value={newEntry.reasoningEffort ?? ''}
+              onChange={(event) => setNewEntry({ ...newEntry, reasoningEffort: event.target.value === '' ? undefined : event.target.value.trim() })}
+              placeholder="如 max / high / medium / low（留空随父会话默认）"
+              style={inputStyle}
+            />
+          </div>
+          <div style={fixedColStyle}>
+            <span style={labelStyle}>后台模式</span>
+            <select
+              value={newEntry.backgroundMode ?? 'one-shot'}
+              onChange={(event) => setNewEntry({ ...newEntry, backgroundMode: event.target.value as 'one-shot' | 'continuable' })}
+              style={{ ...inputStyle, flex: 'none', width: 132 }}
+            >
+              <option value="one-shot">one-shot</option>
+              <option value="continuable">continuable</option>
+            </select>
+          </div>
         </div>
         <div style={rowStyle}>
           <span style={labelStyle}>角色提示词</span>
