@@ -409,11 +409,12 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
 
             <div style={rowStyle}>
               <span style={labelStyle}>描述</span>
-              <input
+              <textarea
                 value={entry.description ?? ''}
                 onChange={(event) => setEntries({ ...entries, [id]: { ...entry, description: event.target.value } })}
-                placeholder="角色描述（模型可见）"
-                style={proseStyle}
+                placeholder="角色描述（模型可见，可拖右下角展开）"
+                rows={1}
+                style={{ ...proseStyle, resize: 'vertical', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', overflow: 'auto' }}
               />
             </div>
 
@@ -550,11 +551,12 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
         </div>
         <div style={rowStyle}>
           <span style={labelStyle}>描述</span>
-          <input
+          <textarea
             value={newEntry.description ?? ''}
             onChange={(event) => setNewEntry({ ...newEntry, description: event.target.value })}
-            placeholder="角色描述（模型可见）"
-            style={proseStyle}
+            placeholder="角色描述（模型可见，可拖右下角展开）"
+            rows={1}
+            style={{ ...proseStyle, resize: 'vertical', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', overflow: 'auto' }}
           />
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
