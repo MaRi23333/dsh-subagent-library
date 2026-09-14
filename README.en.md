@@ -52,8 +52,12 @@ Since 0.3 the roster is a directory with **one file per named subagent** (hot-re
 ~/.dsh/subagents/
   k3-reviewer.yaml     # id = file name
   glm-reader.yaml
+  _backups/            # backup area: copy the original here before editing (ignored by the plugin)
+  README.md            # optional: conventions for agents operating in this directory
   ...
 ```
+
+> **Backup convention** — the plugin never auto-backs up. By convention, agents (or humans) copy the original file into `_backups/` before editing (suggested name `<id>.<yyyymmdd-hhmm>.yaml`). Anything `_`-prefixed is treated as non-roster content and silently ignored.
 
 `~/.dsh/settings.yaml` only keeps the plugin-level options:
 

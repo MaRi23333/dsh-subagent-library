@@ -59,8 +59,12 @@ DeepSeek Harness 的具名子代理库插件：把常用角色（代码审查、
 ~/.dsh/subagents/
   k3-reviewer.yaml     # id = 文件名
   glm-reader.yaml
+  _backups/            # 备份区：agent/人改条目前先把原文件复制到这里（`_` 前缀内容插件忽略）
+  README.md            # 可选：给操作本目录的 agent 看的约定说明
   ...
 ```
+
+> **备份约定**：插件不做自动备份；按惯例，agent（或人）在修改条目前先把原文件复制进 `_backups/`（命名建议 `<id>.<yyyymmdd-hhmm>.yaml`）。`_` 前缀的文件/目录一律视为非名册内容，插件静默忽略。名册目录里可放一份 `README.md` 给操作该目录的 agent 立规矩。
 
 `~/.dsh/settings.yaml` 里只保留插件级配置：
 

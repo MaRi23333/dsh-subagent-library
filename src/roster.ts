@@ -305,6 +305,10 @@ export async function loadRoster(options: LoadRosterOptions): Promise<RosterView
     const lower = name.toLowerCase()
     if (!lower.endsWith('.yaml') && !lower.endsWith('.yml')) continue
     const id = lower.replaceAll('.yml', '').replaceAll('.yaml', '')
+    // `_`-prefixed names are intentional NON-roster content (the `_backups/`
+    // directory agents use for pre-edit copies, `_draft.yaml`, …) — skipped
+    // silently, never reported as diagnostics noise.
+    if (id.startsWith('_')) continue
     if (lower !== name) {
       diagnostics.push({ severity: 'warning', file: name, id, message: `文件名必须全小写，已跳过 "${name}"` })
       continue

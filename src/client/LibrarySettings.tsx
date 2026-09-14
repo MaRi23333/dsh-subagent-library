@@ -203,52 +203,100 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
     })
   }
 
-  const rowStyle = { display: 'flex', alignItems: 'center', gap: '8px' } as const
+  // ── styles (theme-neutral rgba grays, same posture as the 个性化指令 editor:
+  //    every color works on light and dark without theme variables) ──────────
+  const rootStyle = { display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 860, padding: '12px 4px' } as const
+  const headingStyle = { fontSize: 15, fontWeight: 600, margin: 0 } as const
+  const subStyle = { fontSize: 12.5, opacity: 0.7, margin: 0 } as const
+  const rowStyle = { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } as const
   /** Shrinkable multi-column row: min-width 0 lets inputs shrink below their
    *  intrinsic width instead of overflowing the settings card (form controls
    *  otherwise keep their default width as a flex minimum). */
-  const colStyle = { ...rowStyle, flex: 1, minWidth: 0 } as const
-  const labelStyle = { fontSize: '13px', opacity: 0.85, minWidth: '72px' } as const
+  const colStyle = { display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 } as const
+  const labelStyle = { fontSize: 12.5, opacity: 0.75, minWidth: '72px' } as const
   const inputStyle = {
     flex: 1,
     minWidth: 0,
-    fontSize: '13px',
-    fontFamily: 'monospace',
-    padding: '4px 8px',
-    border: '1px solid var(--dsh-color-border, #3a3f4b)',
-    borderRadius: '4px',
+    fontSize: 12.5,
+    fontFamily: 'Consolas, Menlo, monospace',
+    lineHeight: 1.5,
+    padding: '5px 8px',
+    border: '1px solid rgba(128,128,128,0.4)',
+    borderRadius: 6,
     background: 'transparent',
     color: 'inherit',
   } as const
+  /** Persona texts are long — a tall resizable editor so most of the body is
+   *  readable without dragging the handle (the top user complaint). */
+  const textareaStyle = {
+    ...inputStyle,
+    minHeight: 220,
+    resize: 'vertical',
+    whiteSpace: 'pre-wrap',
+    overflowWrap: 'anywhere',
+  } as const
   const buttonStyle = {
-    padding: '3px 12px',
-    fontSize: '12px',
+    padding: '4px 12px',
+    fontSize: 12.5,
+    borderRadius: 6,
+    border: '1px solid rgba(128,128,128,0.4)',
+    background: 'transparent',
+    color: 'inherit',
     cursor: 'pointer',
     opacity: busy ? 0.55 : 1,
+  } as const
+  const primaryStyle = {
+    ...buttonStyle,
+    border: '1px solid transparent',
+    background: 'rgba(59,130,246,0.9)',
+    color: '#fff',
+  } as const
+  const dangerStyle = {
+    ...buttonStyle,
+    border: '1px solid rgba(220,38,38,0.55)',
+  } as const
+  const chipStyle = {
+    display: 'inline-flex',
+    alignItems: 'center',
+    padding: '1px 8px',
+    fontSize: 11,
+    borderRadius: 999,
+    border: '1px solid rgba(128,128,128,0.45)',
+    opacity: 0.8,
   } as const
   const cardStyle = {
     display: 'flex',
     flexDirection: 'column',
-    gap: '6px',
-    padding: '10px 12px',
-    border: '1px solid var(--dsh-color-border, #3a3f4b)',
-    borderRadius: '6px',
+    gap: 8,
+    padding: 12,
+    border: '1px solid rgba(128,128,128,0.35)',
+    borderRadius: 8,
   } as const
-  const hintStyle = { fontSize: '11px', opacity: 0.6, marginTop: '2px' } as const
+  const hintStyle = { fontSize: 11.5, opacity: 0.6, margin: 0 } as const
+  const bannerStyle = {
+    fontSize: 12,
+    padding: '6px 10px',
+    borderRadius: 6,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 2,
+  } as const
+  const okBannerStyle = { ...bannerStyle, background: 'rgba(22,163,74,0.12)', border: '1px solid rgba(22,163,74,0.4)' } as const
+  const errorBannerStyle = { ...bannerStyle, background: 'rgba(220,38,38,0.12)', border: '1px solid rgba(220,38,38,0.45)', color: 'inherit' } as const
+  const warnBannerStyle = { ...bannerStyle, background: 'rgba(217,119,6,0.14)', border: '1px solid rgba(217,119,6,0.45)' } as const
+  const infoBannerStyle = { ...bannerStyle, background: 'rgba(128,128,128,0.12)', border: '1px solid rgba(128,128,128,0.35)' } as const
 
   if (view === null) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px 4px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <div style={{ fontSize: '15px', fontWeight: 600 }}>子代理库</div>
-          <button type="button" onClick={load} style={{ ...buttonStyle, opacity: 0.7 }}>重试</button>
+      <div style={rootStyle}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={headingStyle}>子代理库</div>
+          <button type="button" onClick={load} style={buttonStyle}>重试</button>
         </div>
         {status !== null && (
-          <div style={{ fontSize: '12px', color: status.kind === 'ok' ? 'var(--dsh-color-success, #30a46c)' : 'var(--dsh-color-danger, #e5484d)', whiteSpace: 'pre-wrap' }}>
-            {status.text}
-          </div>
+          <div style={status.kind === 'ok' ? okBannerStyle : errorBannerStyle}>{status.text}</div>
         )}
-        {status === null && <div style={{ fontSize: '13px', opacity: 0.8 }}>正在加载…（若长时间无响应，请重试或检查插件是否加载）</div>}
+        {status === null && <div style={subStyle}>正在加载…（若长时间无响应，请重试或检查插件是否加载）</div>}
       </div>
     )
   }
@@ -256,22 +304,22 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
   const ids = Object.keys(entries)
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', padding: '12px 4px', maxWidth: '720px' }}>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <div style={{ fontSize: '15px', fontWeight: 600 }}>子代理库</div>
-          <button type="button" onClick={load} style={{ ...buttonStyle, opacity: 0.7 }}>刷新</button>
+    <div style={rootStyle}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={headingStyle}>子代理库</div>
+          <button type="button" onClick={load} style={buttonStyle}>刷新</button>
         </div>
-        <span style={hintStyle}>管理具名角色子代理。保存即写名册文件并热生效：模型可在任意会话通过 list_subagents / delegate 使用。</span>
+        <span style={subStyle}>管理具名角色子代理（每条目一个 YAML 文件，保存即热生效）。让 agent 修改条目前，建议先把原文件复制到名册目录的 <code>_backups/</code> 里。</span>
       </div>
 
       {(view.diagnostics?.length ?? 0) > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', padding: '8px 10px', border: '1px solid var(--dsh-color-warning, #f5a623)', borderRadius: '6px', fontSize: '12px' }}>
+        <div style={warnBannerStyle}>
           {view.diagnostics!.map((item, index) => (
             <div
               key={index}
               style={{
-                color: item.severity === 'error' ? 'var(--dsh-color-danger, #e5484d)' : item.severity === 'warning' ? 'var(--dsh-color-warning, #b8860b)' : 'inherit',
+                fontWeight: item.severity === 'error' ? 600 : 400,
                 opacity: item.severity === 'info' ? 0.75 : 1,
               }}
             >
@@ -282,8 +330,8 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
       )}
 
       {(view.legacyCount ?? 0) > 0 && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 10px', border: '1px solid var(--dsh-color-border, #3a3f4b)', borderRadius: '6px', fontSize: '12px' }}>
-          <span style={{ flex: 1 }}>
+        <div style={infoBannerStyle}>
+          <span>
             0.2→0.3 迁移：{view.legacyCount} 个旧条目已导出为名册文件并优先生效，settings.yaml 中的旧副本仍在（仅作回滚兜底）。确认名册正常后可一键清除。
           </span>
           <button
@@ -294,7 +342,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
                 void applyWrite({ op: 'clear-legacy', expectedHash: view?.hash }, '')
               }
             }}
-            style={buttonStyle}
+            style={{ ...buttonStyle, alignSelf: 'flex-start' }}
           >
             清除旧条目
           </button>
@@ -302,27 +350,25 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
       )}
 
       {ids.length === 0 && (
-        <div style={{ fontSize: '13px', opacity: 0.8 }}>库为空。添加第一个条目开始使用。</div>
+        <div style={subStyle}>库为空。添加第一个条目开始使用，或在名册目录放一个 &lt;id&gt;.yaml。</div>
       )}
 
       {ids.map((id) => {
         const entry = entries[id]
         return (
           <div key={id} style={cardStyle}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <span style={{ fontSize: '13px', fontWeight: 600, fontFamily: 'monospace', opacity: entry.enabled === false ? 0.5 : 1 }}>{id}</span>
-              {entry.source === 'legacy' && (
-                <span style={{ fontSize: '10px', padding: '1px 6px', borderRadius: '8px', border: '1px solid var(--dsh-color-border, #3a3f4b)', opacity: 0.7 }}>legacy</span>
-              )}
-              <span style={{ fontSize: '11px', opacity: 0.7 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 13, fontWeight: 600, fontFamily: 'Consolas, Menlo, monospace', opacity: entry.enabled === false ? 0.5 : 1 }}>{id}</span>
+              {entry.source === 'legacy' && <span style={chipStyle}>legacy</span>}
+              {entry.enabled === false && <span style={chipStyle}>已停用</span>}
+              <span style={{ fontSize: 11.5, opacity: 0.7 }}>
                 {entry.provider || '默认路由'}/{entry.model || '默认模型'}
                 {entry.backgroundMode === 'continuable' ? ' · 可续聊' : ''}
                 {entry.maxDepth !== undefined ? ` · 深度${entry.maxDepth}` : ''}
                 {entry.maxTokens !== undefined ? ` · ${entry.maxTokens}tok` : ''}
-                {entry.enabled === false ? ' · 已停用' : ''}
               </span>
               <span style={{ flex: 1 }} />
-              <label style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer' }}>
+              <label style={{ fontSize: 12.5, display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
                 <input
                   type="checkbox"
                   checked={entry.enabled !== false}
@@ -330,8 +376,8 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
                 />
                 启用
               </label>
-              <button type="button" disabled={busy} onClick={() => removeEntry(id)} style={buttonStyle}>删除</button>
-              <button type="button" disabled={busy} onClick={() => updateEntry(id, entry)} style={buttonStyle}>保存</button>
+              <button type="button" disabled={busy} onClick={() => removeEntry(id)} style={dangerStyle}>删除</button>
+              <button type="button" disabled={busy} onClick={() => updateEntry(id, entry)} style={primaryStyle}>保存</button>
             </div>
 
             <div style={rowStyle}>
@@ -454,8 +500,8 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
                 value={entry.persona ?? ''}
                 onChange={(event) => setEntries({ ...entries, [id]: { ...entry, persona: event.target.value } })}
                 placeholder="子代理的系统提示词（可选）"
-                rows={3}
-                style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit' }}
+                rows={10}
+                style={textareaStyle}
               />
             </div>
           </div>
@@ -466,9 +512,9 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
           button on the right, then one label row per field group. */}
       <div style={cardStyle}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <span style={{ fontSize: '13px', fontWeight: 600 }}>新增子代理</span>
+          <span style={{ fontSize: 13, fontWeight: 600 }}>新增子代理</span>
           <span style={{ flex: 1 }} />
-          <button type="button" disabled={busy} onClick={addEntry} style={buttonStyle}>添加</button>
+          <button type="button" disabled={busy} onClick={addEntry} style={primaryStyle}>添加</button>
         </div>
         <div style={rowStyle}>
           <span style={labelStyle}>ID</span>
@@ -569,20 +615,20 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
             value={newEntry.persona ?? ''}
             onChange={(event) => setNewEntry({ ...newEntry, persona: event.target.value })}
             placeholder="子代理的系统提示词（可选）"
-            rows={3}
-            style={{ ...inputStyle, resize: 'vertical', fontFamily: 'inherit' }}
+            rows={10}
+            style={textareaStyle}
           />
         </div>
       </div>
 
       {status !== null && (
-        <div style={{ fontSize: '12px', color: status.kind === 'ok' ? 'var(--dsh-color-success, #30a46c)' : 'var(--dsh-color-danger, #e5484d)' }}>
+        <div style={status.kind === 'ok' ? okBannerStyle : errorBannerStyle}>
           {status.text}
         </div>
       )}
 
-      <div style={{ fontSize: '11px', opacity: 0.55, paddingTop: '4px' }}>
-        配置存储于名册目录 {view.dir || '~/.dsh/subagents'}（每具名子代理一个 &lt;id&gt;.yaml，可手编、热生效）。
+      <div style={hintStyle}>
+        配置存储于名册目录 {view.dir || '~/.dsh/subagents'}（每具名子代理一个 &lt;id&gt;.yaml，可手编、热生效；<code>_</code> 前缀的文件/目录为非名册内容，如 <code>_backups/</code> 备份区）。
         settings.yaml 中的旧 entries 仅作迁移兜底读取，文件优先生效。
       </div>
     </div>

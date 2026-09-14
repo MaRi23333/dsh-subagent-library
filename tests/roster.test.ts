@@ -93,6 +93,22 @@ test('serializeEntry omits defaults and round-trips through YAML', () => {
   assert.deepEqual(backDisabled.entry, ENTRY)
 })
 
+test('loadRoster skips `_`-prefixed names silently (backups, drafts)', async () => {
+  // readdir lists directories too: `_backups/` sits next to the roster files,
+  // and agents may drop `_draft.yaml`-style files — all non-roster content
+  // that must never surface as diagnostics noise.
+  const fs = makeMemFs({
+    '/roster/_backups/old.yaml': 'description: backup copy\n',
+    '/roster/_draft.yaml': 'description: draft\n',
+    '/roster/real.yaml': 'description: real entry\n',
+  })
+  const baseReaddir = fs.readdir.bind(fs)
+  fs.readdir = async (dir: string) => [...await baseReaddir(dir), '_backups']
+  const view = await loadRoster({ dir: '/roster', fs })
+  assert.deepEqual(Object.keys(view.entries), ['real'])
+  assert.equal(view.diagnostics.length, 0)
+})
+
 test('loadRoster reads files sorted, skips broken ones with diagnostics', async () => {
   const fs = makeMemFs({
     '/roster/b-reader.yaml': 'description: reader\n',
