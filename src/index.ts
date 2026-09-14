@@ -49,6 +49,7 @@ import {
   nodeFsPort,
   parseEntryDocument,
   resolveEntriesDir,
+  serializeEntry,
   validateEntryId,
   writeEntryFile,
   EntrySchema,
@@ -266,22 +267,30 @@ export function apply(ctx: Context, config: Config) {
   let migratedDir: string | undefined
   let migrationFailure: string | undefined
   /** Seed the roster directory from legacy settings entries — exactly once
-   *  per directory. Per-entry idempotent (existing files are never touched),
-   *  and legacy documents are deliberately KEPT in settings as the rollback
-   *  copy for users downgrading the plugin (removal planned for 0.4.0). */
+   *  per directory ON SUCCESS. Per-entry idempotent (existing files are never
+   *  touched), and legacy documents are deliberately KEPT in settings as the
+   *  rollback copy for users downgrading the plugin (removal planned 0.4.0).
+   *  A FAILED migration must NOT latch (red team A5): transient FS errors are
+   *  fast-fail and cheap, so every roster read retries until it succeeds —
+   *  otherwise a single AV-lock would silently strand entries on the legacy
+   *  path until 0.4 removes legacy reading. */
   const ensureMigrated = async (): Promise<void> => {
     const legacy = resolveConfig().entries ?? {}
     if (Object.keys(legacy).length === 0) return
     const dir = resolveEntriesDir(resolveConfig().entriesDir)
     if (migratedDir === dir) return
-    migratedDir = dir // never hot-loop a failing migration on every roster read
     try {
       const result = await migrateLegacyEntries({ dir, legacy, fs: fsPort() })
-      migrationFailure = result.diagnostics.length > 0
-        ? result.diagnostics.map((item) => item.message).join('；')
-        : undefined
+      if (result.diagnostics.length === 0) {
+        migratedDir = dir
+        migrationFailure = undefined
+      } else {
+        // Per-entry write failures must ALSO retry (same strand-until-0.4
+        // trap as a thrown error) — do not latch on a partial migration.
+        migrationFailure = `${result.diagnostics.map((item) => item.message).join('；')}（修复后将自动重试）`
+      }
     } catch (error) {
-      migrationFailure = String(error)
+      migrationFailure = `${String(error)}——下次使用名册时自动重试；重启 dsh web 亦可立即重试`
     }
   }
   /** Fresh roster view for every consumer (tools, command, settings API):
@@ -391,15 +400,18 @@ export function apply(ctx: Context, config: Config) {
     return Object.keys(raw).filter((id) => ENTRY_ID.test(id) && view.entries[id]?.source === 'file')
   }
 
-  const wireView = async (): Promise<Record<string, unknown>> => {
+  const wireView = async (legacySkipWarning = false): Promise<Record<string, unknown>> => {
     const { view } = await loadLibrary()
+    const diagnostics = legacySkipWarning
+      ? [{ severity: 'warning' as const, message: '设置服务只读：settings 中的旧副本未能同步移除，被删条目可能以旧副本复活' }, ...view.diagnostics]
+      : view.diagnostics
     return {
       ok: true,
       writable: true,
       dir: view.dir,
       hash: view.hash,
       entries: wireEntries(view),
-      diagnostics: view.diagnostics,
+      diagnostics,
       legacyCount: legacyShadowedIds(view).length,
     }
   }
@@ -408,13 +420,17 @@ export function apply(ctx: Context, config: Config) {
     const web = wctx.webServer
     /** Best-effort removal of legacy-only settings entries (the file half is
      *  already gone). No expectedRevision: last-write-wins — a racing settings
-     *  writer must not fail a delete that mostly succeeded. */
-    const unsetLegacy = async (ids: string[]): Promise<void> => {
-      if (ids.length === 0) return
+     *  writer must not fail a delete that mostly succeeded. Returns whether
+     *  the unset actually ran, so a read-only settings service can be surfaced
+     *  instead of a silent false success (red team A7 / k3 #4). */
+    const unsetLegacy = async (ids: string[]): Promise<'done' | 'skipped-readonly' | 'no-settings'> => {
+      if (ids.length === 0) return 'done'
       const svc = settingsService
       const ns = settingsNs
-      if (svc === undefined || ns === undefined || !svc.writable) return
+      if (svc === undefined || ns === undefined) return 'no-settings'
+      if (!svc.writable) return 'skipped-readonly'
       await svc.mutate(ns, ids.map((id) => ({ op: 'unset', path: ['entries', id] })))
+      return 'done'
     }
     wctx.effect(() => web.register({
       kind: 'exact',
@@ -457,17 +473,30 @@ export function apply(ctx: Context, config: Config) {
         const expectedHash = typeof rawHash === 'string' ? rawHash : undefined
         try {
           const { view: current } = await loadLibrary()
+          /** Append a loud warning when a legacy cleanup was skipped because
+           *  the settings service is read-only — otherwise a deleted entry
+           *  would silently resurrect from its legacy copy (k3 #4). */
+          const withLegacyWarning = (view: RosterView, skipped: boolean): RosterView => {
+            if (!skipped) return view
+            return { ...view, diagnostics: [{ severity: 'warning', message: '设置服务只读：settings 中的旧副本未能同步移除，被删条目可能以旧副本复活' }, ...view.diagnostics] }
+          }
           // UI write guard: hash of the rows the editor last saw. A stale hash
-          // gets a 409 that CARRIES the fresh view so the editor can merge and
-          // retry instead of just failing (v0.3.0 design review, k3-helper).
+          // gets a 409 whose `view` field carries the fresh roster so the
+          // editor can merge and retry instead of just failing (v0.3.0 design
+          // review, k3-helper; wire shape aligned with the client contract).
           if (expectedHash !== undefined && expectedHash !== current.hash) {
             sendJson(res, 409, {
               ok: false,
               error: 'conflict',
-              dir: current.dir,
-              hash: current.hash,
-              entries: wireEntries(current),
-              diagnostics: current.diagnostics,
+              view: {
+                ok: true,
+                writable: true,
+                dir: current.dir,
+                hash: current.hash,
+                entries: wireEntries(current),
+                diagnostics: current.diagnostics,
+                legacyCount: legacyShadowedIds(current).length,
+              },
             })
             return
           }
@@ -476,6 +505,13 @@ export function apply(ctx: Context, config: Config) {
             // legacy copies currently shadowed by a roster file. Legacy rows
             // without a file (failed export, hand-deleted file) keep serving
             // and are deliberately left alone.
+            const svc = settingsService
+            if (svc !== undefined && !svc.writable) {
+              // A silent 200 here would be a false success (A7): the user
+              // believes the rollback copies are gone when they are not.
+              sendJson(res, 403, { ok: false, error: 'readonly', message: '设置服务只读，无法清除旧副本' })
+              return
+            }
             await unsetLegacy(legacyShadowedIds(current))
           } else if (body['op'] === 'delete') {
             const id = typeof body['id'] === 'string' ? body['id'] : ''
@@ -487,7 +523,8 @@ export function apply(ctx: Context, config: Config) {
             // The id may also exist as a legacy settings copy (imported rows
             // keep their settings document until cleaned) — unset it too; the
             // unset is a no-op when the key is absent.
-            await unsetLegacy([id])
+            const unset = await unsetLegacy([id])
+            sendJson(res, 200, await wireView(unset === 'skipped-readonly'))
           } else if (body['op'] === 'save') {
             const entries = body['entries']
             if (typeof entries !== 'object' || entries === null || Array.isArray(entries)) {
@@ -520,7 +557,16 @@ export function apply(ctx: Context, config: Config) {
             // possible legacy copy through the settings service. After a
             // successful migration a row can exist in BOTH stores; deleting
             // only the file would let the legacy copy resurrect it.
+            // Rows whose NORMALIZED content is unchanged are skipped: a
+            // settings-page save must not rewrite untouched files, because
+            // serializeEntry is program-generated and would destroy
+            // hand-written comments in files the user never opened (A1).
             for (const [id, doc] of validated) {
+              const prev = current.entries[id]
+              if (prev?.source === 'file'
+                && serializeEntry(prev.entry, prev.enabled) === serializeEntry(doc.entry, doc.enabled)) {
+                continue
+              }
               await writeEntryFile({ dir: current.dir, id, entry: doc.entry, enabled: doc.enabled, fs: fsPort() })
             }
             const deletedIds: string[] = []
@@ -529,7 +575,8 @@ export function apply(ctx: Context, config: Config) {
               deletedIds.push(id)
               if (row.source === 'file') await deleteEntryFile(current.dir, id, fsPort())
             }
-            await unsetLegacy(deletedIds)
+            const unset = await unsetLegacy(deletedIds)
+            sendJson(res, 200, await wireView(unset === 'skipped-readonly'))
           } else {
             sendJson(res, 400, { ok: false, error: 'unknown-op' })
             return

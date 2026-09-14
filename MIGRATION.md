@@ -49,7 +49,7 @@ subagent-library:
   # entries: ← 0.2.x 的旧段，0.3.x 只读兜底，确认迁移成功后可删
 ```
 
-文件**热生效**：改完保存即可，无需重启；设置页与手编文件双向等价。
+文件**热生效**：改完保存即可，无需重启。设置页与手编文件的数据**双向等价**，但要注意：通过设置页保存某个条目时，**该条目的文件会被重写为程序生成的标准 YAML**（这个文件里的手写注释与自定义排版会丢失）；**你未在本次保存中改动的其他文件一律原样保留**。想保留注释的手编文件，请直接手编，别在设置页里动它。
 
 ## 自动迁移是怎么工作的
 
@@ -59,7 +59,7 @@ subagent-library:
 2. 对每个条目：**如果名册目录里还没有同名 `<id>.yaml`，就导出一个**；
    - 已存在同名文件 → **跳过，绝不覆盖**（你手写的文件是安全的）；
    - id 非法（大写、超长、Windows 保留名）→ 跳过并在诊断里说明；
-3. **settings 里的旧段原样保留**——它是你的回滚备份，插件不会删它。
+3. **settings 里的旧段在迁移阶段原样保留**——它是你的回滚备份。注意：之后你在设置页**删除条目**或点**「清除旧条目」**时，对应的旧副本会被一并移除（名册文件不受影响）。
 
 迁移是逐条幂等的：重启多少次都只会导出缺的那几条，重复内容不会翻倍。
 
@@ -109,13 +109,16 @@ npx @deepseek-ai/dsh plugin --profile web add dsh-subagent-library@0.2.8
 `<id>.yaml`（或 `.yml`），id 必须全小写、匹配 `[a-z0-9][a-z0-9-]*`、长度 ≤ 64，且不能是 Windows 保留设备名（`con`、`nul`、`aux`…）。同一 id 的 `.yaml`/`.yml` 并存会报冲突诊断，只留一个。
 
 **Q：某个文件写坏了会怎样？**
-只有那一个条目失效：它被跳过，并在 `list_subagents`、`/subagent`、设置页 diagnostics 里给出原因，其余条目照常。改好文件即恢复。
+只有那一个条目失效：它被跳过，并在 `list_subagents`、`/subagent`、设置页 diagnostics 里给出原因，其余条目照常。改好文件即恢复。**特别注意**：如果同名条目在 settings 里还有旧副本（迁移完成后通常没有；手动清理过则没有），插件会用**旧副本兜底继续服务**，并在 diagnostics 里以 error 标明「delegate 使用的是旧配置」——看到这条请先修文件。
 
 **Q：怎么临时停用一个子代理（不删文件）？**
-文件里加一行 `enabled: false`（或设置页关掉「启用」开关）。停用的条目仍可见，但 `delegate` 会拒绝并提示。
+文件里加一行 `enabled: false`（或设置页关掉「启用」开关）。停用的条目仍可见，但 `delegate` 会拒绝并提示。注意：仍以 **legacy 兜底**方式服务的条目（见上一条）不支持停用——先在设置页保存一次让它晋升为文件，再停用。
 
 **Q：想给某个子代理单独设置思考强度？**
-0.3 新增 `reasoningEffort` 字段：填适配器自有值（如 `max` / `high` / `medium` / `low`），留空随父会话默认。子代理被路由到不同模型时，官方会自动丢弃继承来的思考强度，因此不设置也不会跨模型泄漏。
+0.3 新增 `reasoningEffort` 字段：填适配器自有值（如 `max` / `high` / `medium` / `low`），留空随父会话默认。子代理被路由到不同模型时，官方会自动丢弃继承来的思考强度，因此不设置也不会跨模型泄漏。取值由模型适配器解释（与官方 agent-default-model 的 reasoningEffort 同一通道）：官方模型选择器启用时会覆盖/清空继承值；插件只接受 id 形态的值（字母数字与 `.` `_` `-`），写别的会在保存时被拒绝。
+
+**Q：迁移会失败吗？失败了会怎样？**
+单条导出失败只影响那一条（它继续以 legacy 兜底，diagnostics 会说明）；整体故障（如目录不可写）时条目全部走 legacy 兜底且设置页有警告横幅——**下次使用名册时会自动重试，重启 dsh web 也可立即重试**，不需要手工干预。
 
 **Q：名册目录能换地方吗？**
 能。settings.yaml 里设 `subagent-library.entriesDir`（支持 `~` 与相对路径，相对路径锚定 `~/.dsh`）。
@@ -133,7 +136,7 @@ npx @deepseek-ai/dsh plugin --profile web add dsh-subagent-library@0.2.8
 2. **Verify**: run `/subagent` or open the settings page — all old entries are listed, and the roster directory now holds one `<id>.yaml` per entry.
 3. **Clean up (optional but recommended)**: click “清除旧条目” on the settings card, or delete the legacy `entries` section from settings.yaml manually.
 
-**What changed** — the roster moved from the inline `subagent-library.entries` map in `~/.dsh/settings.yaml` to **one YAML file per named subagent** under `~/.dsh/subagents/` (configurable via `subagent-library.entriesDir`). Files are hot-reloaded; the settings page and hand-edited files are equivalent.
+**What changed** — the roster moved from the inline `subagent-library.entries` map in `~/.dsh/settings.yaml` to **one YAML file per named subagent** under `~/.dsh/subagents/` (configurable via `subagent-library.entriesDir`). Files are hot-reloaded. Entry DATA is equivalent between the settings page and hand-edited files, but saving an entry from the settings page rewrites THAT entry's file as generated YAML (hand-written comments in that one file are lost); untouched files are left alone.
 
 **Automatic migration** — on the first roster use after upgrading, each legacy entry is exported to `<id>.yaml` **only if that file does not exist yet** (hand-written files are never overwritten; re-runs are idempotent). The legacy settings copies are **kept** as a rollback fallback; files take precedence. Legacy reading stays working throughout 0.3.x and is **removed in 0.4**.
 

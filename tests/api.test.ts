@@ -235,10 +235,13 @@ test('POST save with a stale expectedHash conflicts (409) and carries the fresh 
   assert.equal(res.status, 409)
   const body = jsonBody(res)
   assert.equal(body['error'], 'conflict')
-  // k3-helper review: the 409 must carry the fresh view so the editor can
-  // merge and re-apply instead of blind-retrying.
-  assert.ok((body['entries'] as Record<string, unknown>)['good-entry'] !== undefined)
-  assert.equal(typeof body['hash'], 'string')
+  // k3-helper review: the 409 must carry the fresh view (nested in `view`,
+  // matching the client's writeView contract) so the editor can merge and
+  // re-apply instead of blind-retrying.
+  const view = body['view'] as Record<string, unknown>
+  assert.ok((view['entries'] as Record<string, unknown>)['good-entry'] !== undefined)
+  assert.equal(typeof view['hash'], 'string')
+  assert.equal(typeof view['legacyCount'], 'number')
 })
 
 test('POST save ignores a non-string expectedHash (documented leniency)', async () => {
@@ -288,6 +291,37 @@ test('POST clear-legacy unsets the migrated legacy copies and reports the count'
   assert.equal(body['legacyCount'], 0)
   assert.deepEqual(Object.keys(body['entries'] as Record<string, unknown>).sort(), ['alpha', 'beta'], 'the roster files keep serving')
   assert.deepEqual(host.settings.userSection()?.['entries'], {}, 'settings.yaml entries are now empty')
+})
+
+test('POST clear-legacy with read-only settings fails loudly (403 readonly)', async () => {
+  // A silent 200 here would be a false success: the user believes the
+  // rollback copies are gone when they are not (red team A7).
+  const host = hostWith({ writable: false, baseEntries: { alpha: { ...ENTRY } } })
+  const res = await postJson(host.web, { op: 'clear-legacy' })
+  assert.equal(res.status, 403)
+  assert.equal(jsonBody(res)['error'], 'readonly')
+  assert.ok(host.fs.files()['/roster/alpha.yaml'] !== undefined)
+})
+
+test('POST save skips byte-identical rows — untouched files keep hand-written comments', async () => {
+  // Red team A1: a settings-page save used to rewrite EVERY file as generated
+  // YAML, destroying hand-written comments in rows the user never opened.
+  const host = makeHost({
+    rosterFiles: {
+      '/roster/keep.yaml': '# 手写注释：别动我的排版\ndescription: keep me\n',
+      '/roster/touch.yaml': 'description: old text\n',
+    },
+  })
+  const res = await postJson(host.web, {
+    op: 'save',
+    entries: {
+      keep: { description: 'keep me' },
+      touch: { description: 'new text' },
+    },
+  })
+  assert.equal(res.status, 200)
+  assert.match(String(host.fs.files()['/roster/keep.yaml']), /# 手写注释/, 'unchanged row must not be rewritten')
+  assert.match(String(host.fs.files()['/roster/touch.yaml']), /description: new text/)
 })
 
 test('POST rejects an unknown op (400 unknown-op)', async () => {

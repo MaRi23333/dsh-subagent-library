@@ -120,15 +120,17 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
       }
       skippedWhilePending.current = false
       if (result.conflict) {
-        // The 409 carries the fresh server view: adopt it so the user sees
-        // the concurrent change and can re-apply their edit — not a dead end.
+        // The 409 carries the fresh server view: adopt ONLY the view (fresh
+        // hash/diagnostics/legacyCount) and KEEP local drafts. Save is a full
+        // snapshot anyway, so an informed retry overwrites the concurrent
+        // change — silently wiping the user's drafts here would compound the
+        // loss instead (red team A3).
         if (result.view !== undefined) {
           setView(result.view)
-          setEntries(structuredClone(result.view.entries))
         } else {
           load()
         }
-        setStatus({ kind: 'error', text: '名册已被其他窗口或外部修改，已加载最新内容，请重试。' })
+        setStatus({ kind: 'error', text: '名册已被其他窗口或外部修改（已切换到最新基线）。你的未保存修改已保留；再次保存将以你的版本覆盖。' })
       } else {
         if (skipped) load()
         setStatus({ kind: 'error', text: result.message ?? '保存失败' })

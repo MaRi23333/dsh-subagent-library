@@ -288,6 +288,33 @@ test('delegate passes reasoningEffort through agentOptions (official override)',
   })
 })
 
+test('a transiently failed migration retries on the next roster read (A5)', async () => {
+  // The latch must only engage on SUCCESS: one AV-lock during export must not
+  // strand the entry on the legacy path until 0.4 removes legacy reading.
+  const host = makeHost({ baseEntries: { retry: { description: 'retry me' } } })
+  const originalWrite = host.fs.writeFile.bind(host.fs)
+  let broke = false
+  const flakyWrite = async (path: string, data: string): Promise<void> => {
+    // writeEntryFile writes a DOT-TEMP file first; inject the failure there.
+    const normalized = path.replaceAll('\\', '/')
+    if (!broke && /(^|\/)\.retry\..+\.tmp$/.test(normalized)) {
+      broke = true
+      throw Object.assign(new Error('EPERM transient'), { code: 'EPERM' })
+    }
+    return originalWrite(path, data)
+  }
+  ;(host.fs as { writeFile: (path: string, data: string) => Promise<void> }).writeFile = flakyWrite
+
+  const first = (await tool(host, 'list_subagents').execute({}, EXEC)) as Array<Record<string, unknown>>
+  assert.equal(host.fs.files()['/roster/retry.yaml'], undefined, 'first attempt failed')
+  const diag = first.find((row) => row['diagnostics'] !== undefined) as Record<string, unknown> | undefined
+  assert.ok(diag !== undefined && JSON.stringify(diag).includes('自动重试'), 'the failure must be visible and promise a retry')
+
+  ;(host.fs as { writeFile: (path: string, data: string) => Promise<void> }).writeFile = originalWrite
+  await tool(host, 'list_subagents').execute({}, EXEC)
+  assert.match(String(host.fs.files()['/roster/retry.yaml']), /retry me/, 'the retry must succeed without a restart')
+})
+
 test('delegate omits agentOptions entirely when an entry sets no route overrides', async () => {
   const host = makeHost({
     subagentProviders: ['spawn'],

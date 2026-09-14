@@ -188,6 +188,15 @@ export function parseEntryDocument(raw: unknown): { entry: Entry, enabled: boole
   }
   const { enabled = true, ...rest } = record
   if (typeof enabled !== 'boolean') throw new Error('enabled 必须是布尔值')
+  // reasoningEffort is adapter-owned and deliberately free-form, but it must
+  // LOOK like an id: the official model-selection layer overrides or clears
+  // an inherited effort when installed, and on the raw path the adapter reads
+  // it verbatim — reject prose typos here instead of failing deep in an
+  // adapter far away from the YAML line that caused it (red team A4).
+  if (typeof record['reasoningEffort'] === 'string'
+    && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(record['reasoningEffort'])) {
+    throw new Error(`reasoningEffort 须为 effort id（如 max / high / medium / low），收到 "${record['reasoningEffort']}"`)
+  }
   // The schema performs the real structural validation at runtime; the cast
   // only bridges the static type (rest may legitimately lack optional keys).
   const entry = EntrySchema(rest as unknown as Entry)
@@ -301,10 +310,15 @@ export async function loadRoster(options: LoadRosterOptions): Promise<RosterView
   }
 
   const owner = new Map<string, string>()
+  /** Ids whose FILE exists but failed to load. If a legacy copy then serves
+   *  the same id, that fallback must be LOUD: delegate would run the stale
+   *  settings persona while the user believes their edit is live (A2). */
+  const failedFileIds = new Set<string>()
   for (const name of names) {
     const lower = name.toLowerCase()
     if (!lower.endsWith('.yaml') && !lower.endsWith('.yml')) continue
-    const id = lower.replaceAll('.yml', '').replaceAll('.yaml', '')
+    // Suffix-only strip (never replaceAll — `a.yaml1.yaml` must not become `a1`).
+    const id = lower.endsWith('.yaml') ? lower.slice(0, -5) : lower.slice(0, -4)
     // `_`-prefixed names are intentional NON-roster content (the `_backups/`
     // directory agents use for pre-edit copies, `_draft.yaml`, …) — skipped
     // silently, never reported as diagnostics noise.
@@ -330,6 +344,7 @@ export async function loadRoster(options: LoadRosterOptions): Promise<RosterView
     } catch (error) {
       diagnostics.push({ severity: 'error', file: name, id, message: `读取失败，条目已跳过：${String(error)}` })
       owner.delete(id)
+      failedFileIds.add(id)
       continue
     }
     try {
@@ -337,6 +352,7 @@ export async function loadRoster(options: LoadRosterOptions): Promise<RosterView
       entries[id] = { entry, enabled, source: 'file', file: name }
     } catch (error) {
       diagnostics.push({ severity: 'error', file: name, id, message: `解析或校验失败，条目已跳过：${String(error)}` })
+      failedFileIds.add(id)
     }
   }
 
@@ -352,6 +368,16 @@ export async function loadRoster(options: LoadRosterOptions): Promise<RosterView
         message: `settings 中的旧条目已被名册文件 "${file.file}" 覆盖（旧条目可从 settings.yaml 删除）`,
       })
       continue
+    }
+    if (failedFileIds.has(id)) {
+      // A BROKEN file with a surviving legacy copy is the silent-stale-config
+      // trap (A2): the roster keeps working on the OLD persona while the user
+      // believes their edit is live. Escalate to a loud error.
+      diagnostics.push({
+        severity: 'error',
+        id,
+        message: `名册文件损坏，当前由 settings 旧副本兜底——delegate 使用的是旧配置；修复或删除该文件后恢复文件优先`,
+      })
     }
     entries[id] = { entry, enabled: true, source: 'legacy' }
   }

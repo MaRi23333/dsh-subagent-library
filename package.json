@@ -62,7 +62,7 @@
   "scripts": {
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/roster.test.ts tests/api.test.ts tests/tools.test.ts",
+    "test": "tsx --test tests/roster.test.ts tests/api.test.ts tests/tools.test.ts tests/client.test.ts",
     "smoke": "node scripts/smoke-host.mjs && node scripts/smoke-client.mjs",
     "check:pack": "node scripts/check-pack.mjs",
     "prepack": "pnpm run build"

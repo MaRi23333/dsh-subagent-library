@@ -69,6 +69,10 @@ test('parseEntryDocument validates, rejects unknown keys, and applies schema def
   assert.throws(() => parseEntryDocument({ description: 'x', enabled: 'yes' }), /enabled/)
   assert.throws(() => parseEntryDocument('nope'), /对象/)
   assert.throws(() => parseEntryDocument({}), /description/)
+  // reasoningEffort must look like an adapter effort id, not prose (A4).
+  assert.throws(() => parseEntryDocument({ description: 'x', reasoningEffort: '最大 力度' }), /reasoningEffort/)
+  const effort = parseEntryDocument({ description: 'x', reasoningEffort: 'max' })
+  assert.equal((effort.entry as Entry & { reasoningEffort?: string }).reasoningEffort, 'max')
 })
 
 test('serializeEntry omits defaults and round-trips through YAML', () => {
@@ -107,6 +111,24 @@ test('loadRoster skips `_`-prefixed names silently (backups, drafts)', async () 
   const view = await loadRoster({ dir: '/roster', fs })
   assert.deepEqual(Object.keys(view.entries), ['real'])
   assert.equal(view.diagnostics.length, 0)
+})
+
+test('loadRoster escalates broken-file + legacy overlap to a loud error (A2)', async () => {
+  // The silent-stale-config trap: the file is broken, the legacy copy serves,
+  // delegate succeeds — the user believes their edit is live. Must be loud.
+  const fs = makeMemFs({ '/roster/broken.yaml': 'description: [oops\n' })
+  const view = await loadRoster({ dir: '/roster', legacy: { broken: { description: 'old copy' } }, fs })
+  assert.equal(view.entries['broken']?.source, 'legacy')
+  const escalated = view.diagnostics.find((item) => item.severity === 'error' && /兜底/.test(item.message))
+  assert.ok(escalated !== undefined, 'the fallback must be escalated to its own loud error')
+  assert.match(escalated?.message ?? '', /旧配置/)
+})
+
+test('loadRoster strips only the file SUFFIX, not inner .yaml substrings', async () => {
+  const fs = makeMemFs({ '/roster/a.yaml1.yaml': 'description: tricky\n' })
+  const view = await loadRoster({ dir: '/roster', fs })
+  assert.deepEqual(Object.keys(view.entries), [])
+  assert.match(view.diagnostics[0]?.message ?? '', /must match/)
 })
 
 test('loadRoster reads files sorted, skips broken ones with diagnostics', async () => {

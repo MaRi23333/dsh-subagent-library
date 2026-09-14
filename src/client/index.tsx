@@ -71,6 +71,7 @@ export type LibraryWriteResult =
 /** Host error codes that carry no `message`; map them to user-facing text. */
 const ERROR_TEXT: Record<string, string> = {
   'not-ready': '设置服务尚未就绪，请稍后重试。',
+  'readonly': '设置服务只读，无法完成该操作。',
   'content-type-json-required': '请求被拒绝：写入只接受 JSON。',
   'cross-origin-forbidden': '请求被拒绝：跨源写入。',
   'body-too-large': '请求体超过 1 MiB 上限。',
@@ -89,17 +90,23 @@ interface WireView {
   hash?: string
   entries?: Record<string, StoredEntry>
   diagnostics?: LibraryDiagnostic[]
+  legacyCount?: number
   error?: string
   message?: string
   view?: WireView
 }
 
-const parseView = (value: WireView): LibraryView => ({
+/** Map a wire view onto the UI model. Exported for the wire-contract tests —
+ *  a dropped field here silently kills UI features (k3 review: legacyCount). */
+export const parseView = (value: WireView): LibraryView => ({
   writable: value.writable ?? true,
   dir: value.dir ?? '',
   hash: value.hash ?? '',
   entries: value.entries ?? {},
   diagnostics: value.diagnostics ?? [],
+  // MUST be mapped explicitly: this drives the migration banner + clear button
+  // (k3 review round 2 finding #1 — a dropped field here killed the feature).
+  legacyCount: value.legacyCount ?? 0,
 })
 
 async function readView(): Promise<LibraryView> {
