@@ -452,7 +452,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
                   value={entry.maxTokens ?? ''}
                   onChange={(event) => setEntries({ ...entries, [id]: { ...entry, maxTokens: event.target.value === '' ? undefined : Number(event.target.value) } })}
                   placeholder="tokens"
-                  style={{ ...inputStyle, maxWidth: '110px' }}
+                  style={{ ...inputStyle, flex: 'none', width: 116 }}
                 />
               </div>
             </div>
@@ -465,7 +465,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
                   min={1}
                   value={entry.maxDepth ?? ''}
                   onChange={(event) => setEntries({ ...entries, [id]: { ...entry, maxDepth: event.target.value === '' ? undefined : Number(event.target.value) } })}
-                  style={{ ...inputStyle, maxWidth: '80px' }}
+                  style={{ ...inputStyle, flex: 'none', width: 84 }}
                 />
               </div>
               <div style={colStyle}>
@@ -473,7 +473,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
                 <select
                   value={entry.backgroundMode ?? 'one-shot'}
                   onChange={(event) => setEntries({ ...entries, [id]: { ...entry, backgroundMode: event.target.value as 'one-shot' | 'continuable' } })}
-                  style={{ ...inputStyle, maxWidth: '140px' }}
+                  style={{ ...inputStyle, flex: 'none', width: 132 }}
                 >
                   <option value="one-shot">one-shot</option>
                   <option value="continuable">continuable</option>
@@ -574,7 +574,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
               value={newEntry.maxTokens ?? ''}
               onChange={(event) => setNewEntry({ ...newEntry, maxTokens: event.target.value === '' ? undefined : Number(event.target.value) })}
               placeholder="tokens（可选）"
-              style={{ ...inputStyle, maxWidth: '110px' }}
+              style={{ ...inputStyle, flex: 'none', width: 116 }}
             />
           </div>
         </div>
@@ -586,7 +586,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
               min={1}
               value={newEntry.maxDepth ?? ''}
               onChange={(event) => setNewEntry({ ...newEntry, maxDepth: event.target.value === '' ? undefined : Number(event.target.value) })}
-              style={{ ...inputStyle, maxWidth: '80px' }}
+              style={{ ...inputStyle, flex: 'none', width: 84 }}
             />
           </div>
           <div style={colStyle}>
@@ -594,7 +594,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
             <select
               value={newEntry.backgroundMode ?? 'one-shot'}
               onChange={(event) => setNewEntry({ ...newEntry, backgroundMode: event.target.value as 'one-shot' | 'continuable' })}
-              style={{ ...inputStyle, maxWidth: '140px' }}
+              style={{ ...inputStyle, flex: 'none', width: 132 }}
             >
               <option value="one-shot">one-shot</option>
               <option value="continuable">continuable</option>
