@@ -1,11 +1,16 @@
 /**
- * dsh-subagent-library: a settings-driven named-subagent library.
+ * dsh-subagent-library: a directory-backed named-subagent library.
  *
- * Entries live in the `subagent-library.entries` settings document (hot
- * reloaded, no restart), keyed by id. Each entry names a role: a model, an
- * optional persona, an optional tool filter, a depth cap and a background
- * mode. The plugin registers two model-facing tools on the HOST plane so every
- * session sees them regardless of agent preset:
+ * Since 0.3.0 the roster lives as ONE FILE PER ENTRY (`<id>.yaml`, id = file
+ * name) under a roster directory (default `~/.dsh/subagents`, configurable via
+ * `subagent-library.entriesDir`), hot-effective with no restart and no cache.
+ * Each entry names a role: a model, an optional persona, an optional tool
+ * filter, a depth cap and a background mode. The 0.2.x inline
+ * `subagent-library.entries` settings document keeps working as a READ-ONLY
+ * legacy fallback (files win; a per-entry idempotent migration seeds the
+ * directory once) and is scheduled for removal in 0.4.0. The plugin registers
+ * two model-facing tools on the HOST plane so every session sees them
+ * regardless of agent preset:
  *
  *   - `list_subagents` — the catalog (id + description + model), so the model
  *     can pick an entry instead of guessing that a role exists.
@@ -35,11 +40,30 @@ import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import type { SettingsNamespace, SettingsProvider } from '@deepseek-ai/dsh-settings'
 import type { CommandResult } from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-host-webserver'
+import {
+  ENTRY_ID,
+  deleteEntryFile,
+  kFsPort,
+  loadRoster,
+  migrateLegacyEntries,
+  nodeFsPort,
+  parseEntryDocument,
+  resolveEntriesDir,
+  validateEntryId,
+  writeEntryFile,
+  EntrySchema,
+  type Entry,
+  type FsPort,
+  type RosterEntry,
+  type RosterView,
+  type ToolFilter,
+} from './roster.ts'
+
+export type { Entry, ToolFilter } from './roster.ts'
 
 export const name = 'subagent-library'
 export const inject = ['subagents', 'tools', 'systemPrompt']
 
-const ENTRY_ID = /^[a-z0-9][a-z0-9-]*$/
 const LIBRARY_SECTION_ORDER = 116.6
 /** Recursion cap applied when an entry omits maxDepth and the transport can
  *  enforce it — the harness itself imposes no global delegation cap
@@ -47,60 +71,18 @@ const LIBRARY_SECTION_ORDER = 116.6
  *  subagent tool defaults to 3 to keep chained delegation bounded. */
 const DEFAULT_MAX_DEPTH = 3
 
-/** Optional child tool scoping: named tools vanish from the child's prompt AND refuse execution. */
-export interface ToolFilter {
-  /** Global tool names the child keeps; everything else is removed. */
-  allow?: string[]
-  /** Global tool names removed from the child. */
-  deny?: string[]
-}
-
-/** One named library entry. */
-export interface Entry {
-  /** Role description surfaced to the model in `list_subagents`; keep it self-contained. */
-  description: string
-  /** LLM provider route for the child (e.g. `deepseek-official`, `kimi-coding`); omitted children use the caller's loop defaults. */
-  provider?: string
-  /** Provider model id; omitted children use the caller's loop defaults. */
-  model?: string
-  /** Subagent transport provider (e.g. `spawn`); defaults to the plugin-level `subagentProvider`. */
-  subagentProvider?: string
-  /** Per-request output cap for the child. */
-  maxTokens?: number
-  /** Per-child persona shadowing the deployment persona for this child. */
-  persona?: string
-  /** Child tool scoping. */
-  toolFilter?: ToolFilter
-  /** Absolute delegation-depth cap for the child; requires provider depthLimit. */
-  maxDepth?: number
-  /** `one-shot` (default) or `continuable` (durable, resumable background child). */
-  backgroundMode?: 'one-shot' | 'continuable'
-}
-
 export interface Config {
   /** Subagent transport provider used when an entry names none. */
   subagentProvider: string
-  /** Named subagent library, keyed by id (`[a-z0-9][a-z0-9-]*`). */
-  entries: Record<string, Entry>
+  /** Roster directory holding one `<id>.yaml` per entry. Default `~/.dsh/subagents`. */
+  entriesDir?: string
+  /** @deprecated 0.2.x inline roster — read-only legacy fallback in 0.3.x, removal planned for 0.4.0. */
+  entries?: Record<string, Entry>
 }
-
-const EntrySchema = z.object({
-  description: z.string().required(),
-  provider: z.string(),
-  model: z.string(),
-  subagentProvider: z.string(),
-  maxTokens: z.natural().max(Number.MAX_SAFE_INTEGER),
-  persona: z.string(),
-  toolFilter: z.object({
-    allow: z.array(z.string()).default(undefined as unknown as string[]),
-    deny: z.array(z.string()).default(undefined as unknown as string[]),
-  }).default(undefined as unknown as { allow: string[]; deny: string[] }),
-  maxDepth: z.natural().max(Number.MAX_SAFE_INTEGER),
-  backgroundMode: z.union(['one-shot', 'continuable'] as const).default('one-shot'),
-})
 
 export const Config: z<Config> = z.object({
   subagentProvider: z.string().default('spawn'),
+  entriesDir: z.string(),
   entries: z.dict(EntrySchema).default({}),
 })
 
@@ -268,13 +250,52 @@ export function apply(ctx: Context, config: Config) {
   })
   /** Library entries restricted to schema-consistent ids: a hand-written key
    *  like `k3_reviewer` passes z.dict (any string key) but can never be
-   *  delegated or deleted, so it is filtered out of every view. Saving any
-   *  entry then replaces the document and drops the orphaned key. */
-  const filterEntries = (raw: Record<string, Entry>): Record<string, Entry> =>
-    Object.fromEntries(Object.entries(raw).filter(([id]) => ENTRY_ID.test(id)))
+   *  delegated or deleted, so it is filtered out of every view. */
+  const filterEntries = (raw: Record<string, Entry> | undefined): Record<string, Entry> =>
+    Object.fromEntries(Object.entries(raw ?? {}).filter(([id]) => ENTRY_ID.test(id)))
   const resolveConfig = (): Config => {
     const base = source !== undefined ? source() : config
     return { ...base, entries: filterEntries(base.entries) }
+  }
+
+  // ── directory roster: one-shot idempotent migration + fresh reads ─────────
+  // Tests install an in-memory FsPort under `kFsPort` on the Context
+  // (SUB-TEST-001: no real disk access); production falls back to node:fs.
+  const fsPort = (): FsPort =>
+    (ctx as unknown as Record<symbol, unknown>)[kFsPort] as FsPort | undefined ?? nodeFsPort
+  let migratedDir: string | undefined
+  let migrationFailure: string | undefined
+  /** Seed the roster directory from legacy settings entries — exactly once
+   *  per directory. Per-entry idempotent (existing files are never touched),
+   *  and legacy documents are deliberately KEPT in settings as the rollback
+   *  copy for users downgrading the plugin (removal planned for 0.4.0). */
+  const ensureMigrated = async (): Promise<void> => {
+    const legacy = resolveConfig().entries ?? {}
+    if (Object.keys(legacy).length === 0) return
+    const dir = resolveEntriesDir(resolveConfig().entriesDir)
+    if (migratedDir === dir) return
+    migratedDir = dir // never hot-loop a failing migration on every roster read
+    try {
+      const result = await migrateLegacyEntries({ dir, legacy, fs: fsPort() })
+      migrationFailure = result.diagnostics.length > 0
+        ? result.diagnostics.map((item) => item.message).join('；')
+        : undefined
+    } catch (error) {
+      migrationFailure = String(error)
+    }
+  }
+  /** Fresh roster view for every consumer (tools, command, settings API):
+   *  no cache — tens of small files read in milliseconds, and the cache layer
+   *  is exactly where mtime/case/rename bugs live (v0.3.0 design review). */
+  const loadLibrary = async (): Promise<{ subagentProvider: string, view: RosterView }> => {
+    if (settingsFailure !== undefined) throw new Error(settingsFailure)
+    const cfg = resolveConfig()
+    await ensureMigrated()
+    const view = await loadRoster({ dir: resolveEntriesDir(cfg.entriesDir), legacy: cfg.entries, fs: fsPort() })
+    if (migrationFailure !== undefined) {
+      view.diagnostics.unshift({ severity: 'warning', message: `旧条目自动迁移未完成：${migrationFailure}` })
+    }
+    return { subagentProvider: cfg.subagentProvider, view }
   }
 
   // ── settings page API (own HTTP routes) ────────────────────────────────────
@@ -348,28 +369,39 @@ export function apply(ctx: Context, config: Config) {
     return true
   }
 
-  /** Raw `entries` map from one descriptor layer; arrays and non-objects are
-   *  rejected so a damaged document cannot masquerade as the library. */
-  const entriesOf = (section: unknown): Record<string, Entry> | undefined => {
-    if (typeof section !== 'object' || section === null || Array.isArray(section)) return undefined
-    const entries = (section as { entries?: unknown }).entries
-    return typeof entries === 'object' && entries !== null && !Array.isArray(entries)
-      ? entries as Record<string, Entry>
-      : undefined
-  }
+  /** Wire shape of one roster row for the settings editor: the stored entry
+   *  plus the enabled flag when false and a `source` marker for legacy rows. */
+  const wireEntries = (view: RosterView): Record<string, unknown> =>
+    Object.fromEntries(Object.entries(view.entries).map(([id, row]) => [id, {
+      ...row.entry,
+      ...(row.enabled ? {} : { enabled: false }),
+      ...(row.source === 'legacy' ? { source: 'legacy' } : {}),
+    }]))
 
-  const currentView = (): { writable: boolean; revision: number; entries: Record<string, Entry> } | null => {
-    const svc = settingsService
-    const ns = settingsNs
-    if (svc === undefined || ns === undefined) return null
-    const descriptor = svc.describe().find((candidate) => candidate.ns === ns)
-    if (descriptor === undefined) return null
-    const entries = filterEntries(entriesOf(descriptor.user) ?? entriesOf(descriptor.value) ?? {})
-    return { writable: svc.writable, revision: descriptor.revision, entries }
+  const wireView = async (): Promise<Record<string, unknown>> => {
+    const { view } = await loadLibrary()
+    return {
+      ok: true,
+      writable: true,
+      dir: view.dir,
+      hash: view.hash,
+      entries: wireEntries(view),
+      diagnostics: view.diagnostics,
+    }
   }
 
   ctx.inject(['webServer'], (wctx: Context) => {
     const web = wctx.webServer
+    /** Best-effort removal of legacy-only settings entries (the file half is
+     *  already gone). No expectedRevision: last-write-wins — a racing settings
+     *  writer must not fail a delete that mostly succeeded. */
+    const unsetLegacy = async (ids: string[]): Promise<void> => {
+      if (ids.length === 0) return
+      const svc = settingsService
+      const ns = settingsNs
+      if (svc === undefined || ns === undefined || !svc.writable) return
+      await svc.mutate(ns, ids.map((id) => ({ op: 'unset', path: ['entries', id] })))
+    }
     wctx.effect(() => web.register({
       kind: 'exact',
       path: '/subagent-library/api',
@@ -379,12 +411,11 @@ export function apply(ctx: Context, config: Config) {
             sendJson(res, 503, { ok: false, error: 'not-ready', message: settingsFailure })
             return
           }
-          const view = currentView()
-          if (view === null) {
-            sendJson(res, 503, { ok: false, error: 'not-ready' })
-            return
+          try {
+            sendJson(res, 200, await wireView())
+          } catch (error) {
+            sendJson(res, 500, { ok: false, error: 'roster-unreadable', message: String(error) })
           }
-          sendJson(res, 200, { ok: true, ...view })
           return
         }
         if (req.method !== 'POST') {
@@ -392,6 +423,10 @@ export function apply(ctx: Context, config: Config) {
           return
         }
         if (!guardWrite(req, res)) return
+        if (settingsFailure !== undefined) {
+          sendJson(res, 503, { ok: false, error: 'not-ready', message: settingsFailure })
+          return
+        }
         const read = await readJsonBody(req)
         if (!read.ok) {
           if (read.error === 'too-large') {
@@ -402,26 +437,37 @@ export function apply(ctx: Context, config: Config) {
           return
         }
         const body = read.body
-        const svc = settingsService
-        const ns = settingsNs
-        if (svc === undefined || ns === undefined) {
-          sendJson(res, 503, { ok: false, error: 'not-ready' })
-          return
-        }
-        if (!svc.writable) {
-          sendJson(res, 403, { ok: false, error: 'readonly' })
-          return
-        }
-        const rawRevision = body['expectedRevision']
-        const expectedRevision = typeof rawRevision === 'number' && Number.isInteger(rawRevision) ? rawRevision : undefined
+        const rawHash = body['expectedHash']
+        // Non-string hashes are treated as absent (documented leniency, same
+        // posture the old expectedRevision revision had).
+        const expectedHash = typeof rawHash === 'string' ? rawHash : undefined
         try {
+          const { view: current } = await loadLibrary()
+          // UI write guard: hash of the rows the editor last saw. A stale hash
+          // gets a 409 that CARRIES the fresh view so the editor can merge and
+          // retry instead of just failing (v0.3.0 design review, k3-helper).
+          if (expectedHash !== undefined && expectedHash !== current.hash) {
+            sendJson(res, 409, {
+              ok: false,
+              error: 'conflict',
+              dir: current.dir,
+              hash: current.hash,
+              entries: wireEntries(current),
+              diagnostics: current.diagnostics,
+            })
+            return
+          }
           if (body['op'] === 'delete') {
             const id = typeof body['id'] === 'string' ? body['id'] : ''
             if (!ENTRY_ID.test(id)) {
               sendJson(res, 400, { ok: false, error: 'invalid-id' })
               return
             }
-            await svc.mutate(ns, [{ op: 'unset', path: ['entries', id] }], expectedRevision)
+            await deleteEntryFile(current.dir, id, fsPort())
+            // The id may also exist as a legacy settings copy (imported rows
+            // keep their settings document until cleaned) — unset it too; the
+            // unset is a no-op when the key is absent.
+            await unsetLegacy([id])
           } else if (body['op'] === 'save') {
             const entries = body['entries']
             if (typeof entries !== 'object' || entries === null || Array.isArray(entries)) {
@@ -429,50 +475,50 @@ export function apply(ctx: Context, config: Config) {
               return
             }
             const candidate = entries as Record<string, unknown>
-            const badKey = Object.keys(candidate).find((key) => !ENTRY_ID.test(key))
-            if (badKey !== undefined) {
-              sendJson(res, 400, { ok: false, error: 'invalid-entry-id', message: `entry id "${badKey}" is invalid` })
-              return
+            // Validate EVERY id and payload before touching the disk. toolFilter
+            // names are still NOT pre-checked against the tool registry —
+            // `tools.restrict` at child composition remains the real guard
+            // (0.2.2–0.2.4 showed a save-time pre-check only false-rejects).
+            const validated = new Map<string, { entry: Entry, enabled: boolean }>()
+            for (const [id, value] of Object.entries(candidate)) {
+              const idError = validateEntryId(id)
+              if (idError !== undefined) {
+                sendJson(res, 400, { ok: false, error: 'invalid-entry-id', message: idError })
+                return
+              }
+              const payload = { ...(value as Record<string, unknown>) }
+              delete payload['source'] // editor provenance marker, not entry data
+              try {
+                validated.set(id, parseEntryDocument(payload))
+              } catch (error) {
+                sendJson(res, 400, { ok: false, error: 'rejected', message: `条目 "${id}"：${String(error)}` })
+                return
+              }
             }
-            // Validate against the plugin schema before persisting.
-            Config({ ...config, entries: candidate as Record<string, Entry> })
-            // Note: toolFilter names are NOT pre-checked against the tool
-            // registry. The harness keeps every model-facing tool on the agent
-            // plane (the global layer is empty by design — dsh-agent-presets),
-            // and the set a delegated child inherits depends on the parent at
-            // delegate time; no host-plane probe can enumerate it exactly.
-            // `tools.restrict` at child composition validates loudly with a
-            // precise "known global tools: …" error, which is the real guard.
-            // An early check here only produced false rejections that broke
-            // the settings UI for legitimate deny lists (0.2.2–0.2.4).
-            // Wholesale-replace the `entries` map: the editor sends a COMPLETE
-            // snapshot (fields the user cleared are absent, which is exactly
-            // how a removal is expressed), while settings `update` deep-merges
-            // and can never remove keys the patch dropped. Other top-level
-            // user keys (e.g. subagentProvider) are preserved by spreading the
-            // current raw section underneath.
-            const saveDescriptor = svc.describe().find((row) => row.ns === ns)
-            const userSection = (saveDescriptor?.user ?? {}) as Record<string, unknown>
-            await svc.replace(ns, { ...userSection, entries: candidate }, expectedRevision)
+            // Snapshot semantics: every payload row becomes a file; roster rows
+            // absent from the payload are deleted — the file directly, AND the
+            // possible legacy copy through the settings service. After a
+            // successful migration a row can exist in BOTH stores; deleting
+            // only the file would let the legacy copy resurrect it.
+            for (const [id, doc] of validated) {
+              await writeEntryFile({ dir: current.dir, id, entry: doc.entry, enabled: doc.enabled, fs: fsPort() })
+            }
+            const deletedIds: string[] = []
+            for (const [id, row] of Object.entries(current.entries)) {
+              if (validated.has(id)) continue
+              deletedIds.push(id)
+              if (row.source === 'file') await deleteEntryFile(current.dir, id, fsPort())
+            }
+            await unsetLegacy(deletedIds)
           } else {
             sendJson(res, 400, { ok: false, error: 'unknown-op' })
             return
           }
-          const view = currentView()
-          if (view === null) {
-            sendJson(res, 503, { ok: false, error: 'not-ready' })
-            return
-          }
-          sendJson(res, 200, { ok: true, ...view })
+          sendJson(res, 200, await wireView())
         } catch (error) {
-          const message = String(error)
-          // SettingsConflictError carries a stable `code` property; checking the
-          // property (not `instanceof`) survives the bundled module copy.
-          if ((error as { code?: unknown }).code === 'SETTINGS_CONFLICT') {
-            sendJson(res, 409, { ok: false, error: 'conflict' })
-          } else {
-            sendJson(res, 400, { ok: false, error: 'rejected', message })
-          }
+          // Per-file writes are individually atomic; a mid-snapshot failure
+          // leaves a partial roster and is reported loudly with the message.
+          sendJson(res, 500, { ok: false, error: 'write-failed', message: String(error) })
         }
       },
     }), 'subagent-library: settings api route')
@@ -504,12 +550,13 @@ export function apply(ctx: Context, config: Config) {
     isConcurrencySafe: () => true,
     async execute(_args, exec) {
       if (settingsFailure !== undefined) throw new Error(settingsFailure)
-      const lib = resolveConfig()
+      const { view } = await loadLibrary()
       const agent = exec.agent
       /** The catalog must not advertise a filter this session cannot apply:
        *  summarize the SANITIZED filter and list what was ignored, so the model
        *  sees the same tool scope delegation will actually produce. */
-      const filterSummary = (entry: Entry): string | undefined => {
+      const filterSummary = (row: RosterEntry): string | undefined => {
+        const entry = row.entry
         if (entry.toolFilter === undefined) return undefined
         const declared = [
           entry.toolFilter.allow !== undefined ? `allow:[${entry.toolFilter.allow.join(', ')}]` : '',
@@ -527,17 +574,42 @@ export function apply(ctx: Context, config: Config) {
           ? `${effective} 忽略:[${dropped.map((item) => item.name).join(', ')}]`
           : effective
       }
-      return Object.entries(lib.entries).map(([id, entry]) => {
-        const summary = filterSummary(entry)
+      /** Row shape mirrors the tool's declared output schema (JsonValue-safe:
+       *  no bare Record<string, unknown>, the diagnostics row included). */
+      type CatalogRow = {
+        id?: string
+        description?: string
+        provider?: string
+        model?: string
+        backgroundMode?: string
+        toolFilter?: string
+        enabled?: boolean
+        diagnostics?: string[]
+      }
+      const rows: CatalogRow[] = Object.entries(view.entries).map(([id, row]) => {
+        const summary = filterSummary(row)
         return {
           id,
-          description: entry.description,
-          provider: entry.provider ?? '(session default)',
-          model: entry.model ?? '(session default)',
-          backgroundMode: entry.backgroundMode ?? 'one-shot',
+          description: row.entry.description,
+          provider: row.entry.provider ?? '(session default)',
+          model: row.entry.model ?? '(session default)',
+          backgroundMode: row.entry.backgroundMode ?? 'one-shot',
+          ...(row.enabled ? {} : { enabled: false }),
           ...(summary !== undefined ? { toolFilter: summary } : {}),
         }
       })
+      // Roster files that failed to load must be visible to the model too —
+      // a silently missing entry looks like "the agent disappeared". Info
+      // diagnostics (legacy-shadow notices) stay on the settings page: while
+      // legacy copies exist they would repeat on every catalog call.
+      const catalogDiagnostics = view.diagnostics.filter((item) => item.severity !== 'info')
+      if (catalogDiagnostics.length > 0) {
+        rows.push({
+          diagnostics: catalogDiagnostics.map((item) =>
+            `${item.severity}${item.id !== undefined ? ` [${item.id}]` : ''}: ${item.message}`),
+        })
+      }
+      return rows
     },
   }))
 
@@ -601,18 +673,22 @@ export function apply(ctx: Context, config: Config) {
       if (settingsFailure !== undefined) throw new Error(settingsFailure)
       const parent = exec.agent
       if (!parent) throw new Error('delegate tool requires a calling agent (exec.agent was undefined)')
-      const lib = resolveConfig()
+      const { subagentProvider: defaultProvider, view } = await loadLibrary()
       if (!ENTRY_ID.test(args.library_id)) throw new Error(`subagent library entry id "${args.library_id}" is invalid`)
       // Own-property lookup only: a plain-object prototype chain would resolve
       // ids like `constructor` to inherited functions (≠ undefined) and slip
       // past the missing-entry error into a real delegation.
-      const entry = Object.hasOwn(lib.entries, args.library_id) ? lib.entries[args.library_id] : undefined
-      if (entry === undefined) {
-        const ids = Object.keys(lib.entries)
+      const row = Object.hasOwn(view.entries, args.library_id) ? view.entries[args.library_id] : undefined
+      if (row === undefined) {
+        const ids = Object.keys(view.entries)
         throw new Error(`subagent library has no entry "${args.library_id}"${ids.length ? ` (available: ${ids.join(', ')})` : ' (library is empty)'}`)
       }
+      if (!row.enabled) {
+        throw new Error(`delegate: entry "${args.library_id}" is disabled — remove "enabled: false" in its roster file (or re-enable it on the settings page) to delegate to it again`)
+      }
+      const entry = row.entry
 
-      const subagentProviderName = entry.subagentProvider ?? lib.subagentProvider
+      const subagentProviderName = entry.subagentProvider ?? defaultProvider
       const transport = ctx.subagents.getProvider(subagentProviderName)
       if (transport === undefined) {
         throw new Error(`subagent transport provider "${subagentProviderName}" is not registered (available: ${ctx.subagents.list().join(', ') || 'none'})`)
@@ -751,15 +827,25 @@ export function apply(ctx: Context, config: Config) {
     commands.register({
       name: 'subagent',
       description: 'List the subagent library entries',
-      handler: (): CommandResult => {
-        const lib = resolveConfig()
-        const ids = Object.keys(lib.entries)
-        const text = ids.length === 0
-          ? '子代理库为空。在 settings.yaml 的 subagent-library.entries 下添加条目（id / description / provider / model / subagentProvider / persona / toolFilter / maxDepth / backgroundMode）。'
-          : `子代理库（${ids.length} 个）：\n` + ids.map((id) => {
-            const entry = lib.entries[id]
-            return `- ${id}: ${entry.description} [${entry.provider ?? '默认模型路由'}/${entry.model ?? '默认模型'}${entry.backgroundMode === 'continuable' ? '，可续聊' : ''}]`
-          }).join('\n')
+      handler: async (): Promise<CommandResult> => {
+        const { view } = await loadLibrary()
+        const ids = Object.keys(view.entries)
+        const lines = ids.map((id) => {
+          const row = view.entries[id]
+          const tags = [
+            `${row.entry.provider ?? '默认模型路由'}/${row.entry.model ?? '默认模型'}`,
+            row.entry.backgroundMode === 'continuable' ? '可续聊' : '',
+            row.source === 'legacy' ? 'legacy' : '',
+            row.enabled ? '' : '已停用',
+          ].filter(Boolean).join('，')
+          return `- ${id}: ${row.entry.description} [${tags}]`
+        })
+        const diagnosticLines = view.diagnostics
+          .filter((item) => item.severity !== 'info')
+          .map((item) => `  ! ${item.severity}${item.id !== undefined ? ` [${item.id}]` : ''}: ${item.message}`)
+        const text = ids.length === 0 && view.diagnostics.length === 0
+          ? `子代理库为空。在名册目录放置 <id>.yaml 文件（默认 ~/.dsh/subagents/，可用 subagent-library.entriesDir 配置），或在设置页添加。`
+          : `子代理库（${ids.length} 个，目录 ${view.dir}）：\n` + [...lines, ...diagnosticLines].join('\n')
         return { kind: 'success', text }
       },
     })

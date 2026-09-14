@@ -11,6 +11,7 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { apply, type Entry } from '../src/index.ts'
+import { kFsPort, type FsPort } from '../src/roster.ts'
 
 export interface RouteSpec {
   kind: string
@@ -117,6 +118,10 @@ export function makeSettings(options: SettingsOptions = {}): MockSettings {
 export interface HostOptions extends SettingsOptions {
   /** Entries baked into the plugin base config (the `value` layer). */
   baseEntries?: Record<string, Entry>
+  /** Roster directory passed as `entriesDir` (fake path, resolved by MemFs). */
+  rosterDir?: string
+  /** Files the in-memory roster directory starts with (`/roster/reader.yaml` → YAML). */
+  rosterFiles?: Record<string, string>
   /** Tool names the fake registry knows (visible in a scope view). */
   knownTools?: string[]
   /**
@@ -139,6 +144,71 @@ export interface MockHost {
   subagentStarts: Array<{ provider: string, request: Record<string, unknown> }>
   /** Every scope passed to `tools.view(scope)` — must be the Agent object. */
   toolViewScopes: unknown[]
+  /** The in-memory FsPort the plugin was given (assert files written here). */
+  fs: MemFs
+}
+
+const enoent = (): Error => Object.assign(new Error('ENOENT (memfs)'), { code: 'ENOENT' })
+
+/** In-memory FsPort: the roster loader/writer runs entirely against this map,
+ *  so tests never touch the real filesystem (SUB-TEST-001). Paths are exact
+ *  string keys; a directory "exists" once it has entries or was mkdir'ed. */
+export interface MemFs extends FsPort {
+  /** Snapshot of every stored file (full path → content). */
+  files: () => Record<string, string>
+}
+
+export function makeMemFs(initial: Record<string, string> = {}): MemFs {
+  // Keys are ALWAYS stored normalized (backslashes → slashes): the production
+  // code joins paths with node:path, which on Windows yields `\roster\x.yaml`
+  // while tests write `/roster/x.yaml`.
+  const normalize = (value: string): string => value.replaceAll('\\', '/')
+  const files = new Map<string, string>(
+    Object.entries(initial).map(([key, value]) => [normalize(key), value]),
+  )
+  const dirs = new Set<string>()
+  const parentOf = (value: string): string => {
+    const cut = value.lastIndexOf('/')
+    return cut <= 0 ? '/' : value.slice(0, cut)
+  }
+  return {
+    async readdir(dir) {
+      const normalized = normalize(dir)
+      const names = [...files.keys()]
+        .filter((path) => parentOf(path) === normalized)
+        .map((path) => path.slice(normalized.length + 1))
+      if (names.length === 0 && !dirs.has(normalized)) throw enoent()
+      return names
+    },
+    async readFile(path) {
+      const value = files.get(normalize(path))
+      if (value === undefined) throw enoent()
+      return Buffer.from(value, 'utf8')
+    },
+    async writeFile(path, data) {
+      files.set(normalize(path), data)
+    },
+    async rename(from, to) {
+      const value = files.get(normalize(from))
+      if (value === undefined) throw enoent()
+      files.set(normalize(to), value)
+      files.delete(normalize(from))
+    },
+    async unlink(path) {
+      if (!files.delete(normalize(path))) throw enoent()
+    },
+    async mkdir(dir, _options) {
+      let current = normalize(dir)
+      const seen: string[] = []
+      while (current !== '' && current !== '/' && !dirs.has(current)) {
+        seen.push(current)
+        const cut = current.lastIndexOf('/')
+        current = cut <= 0 ? '/' : current.slice(0, cut)
+      }
+      for (const item of seen.reverse()) dirs.add(item)
+    },
+    files: () => Object.fromEntries(files),
+  }
 }
 
 /**
@@ -155,6 +225,7 @@ export function makeHost(options: HostOptions = {}): MockHost {
   const subagentStarts: MockHost['subagentStarts'] = []
   const toolViewScopes: MockHost['toolViewScopes'] = []
   let settingsCb: ((sctx: unknown) => void) | undefined
+  const fs = makeMemFs(options.rosterFiles)
 
   const providerNames = options.subagentProviders ?? []
   const providers = new Map(providerNames.map((providerName) => [providerName, {
@@ -208,12 +279,19 @@ export function makeHost(options: HostOptions = {}): MockHost {
     },
     get: () => undefined,
   }
+  // SUB-TEST-001: the plugin must never touch the real disk — the FsPort is
+  // injected BEFORE apply() so every roster read/write lands in memory.
+  ;(ctx as unknown as Record<symbol, unknown>)[kFsPort] = fs
 
-  apply(ctx as never, { subagentProvider: 'spawn', entries: options.baseEntries ?? {} })
+  apply(ctx as never, {
+    subagentProvider: 'spawn',
+    entries: options.baseEntries ?? {},
+    entriesDir: options.rosterDir ?? '/roster',
+  })
   if (settingsCb === undefined) throw new Error('apply() did not register a settings inject callback')
   settingsCb({ settings, effect: (fn: () => unknown) => fn() })
 
-  return { web, tools, settings, subagentStarts, toolViewScopes }
+  return { web, tools, settings, subagentStarts, toolViewScopes, fs }
 }
 
 export interface ReqOptions {

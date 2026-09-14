@@ -35,25 +35,17 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
   const busyRef = useRef(false)
   useEffect(() => () => { alive.current = false }, [])
 
-  /** Revision of the last committed server state (successful write or load).
-   *  document-updated pushes at or below it are our own write's echo and are
-   *  skipped — applyWrite already merged the touched row, and a full reload
-   *  here would wipe unsaved drafts in other rows. External pushes (higher
-   *  revisions) still reload. */
-  const lastCommitted = useRef<number | null>(null)
   /** True while a write request is in flight: the push and the HTTP response
    *  travel on independent channels, so a push may arrive before the response
-   *  commits our state. Everything in this window is skipped and the newest
-   *  skipped revision is re-checked after the response. */
+   *  commits our state. Pushes in this window are skipped and re-run after. */
   const pendingSelfWrite = useRef(false)
-  const skippedWhilePending = useRef<number | null>(null)
+  const skippedWhilePending = useRef(false)
 
   const load = (): void => {
     void (async () => {
       try {
         const next = await readView()
         if (!alive.current) return
-        lastCommitted.current = next.revision
         setView(next)
         setEntries(structuredClone(next.entries))
       } catch (error) {
@@ -64,19 +56,22 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
 
   useEffect(() => {
     load()
-    return subscribeRefresh((revision) => {
+    // File-roster changes carry no push (the roster is read fresh on every
+    // load, no watcher by design); this fires only for settings-layer commits
+    // such as a legacy-only entry being unset. Reload unless our own write is
+    // in flight — a reload here would wipe unsaved drafts in other rows.
+    return subscribeRefresh(() => {
       if (pendingSelfWrite.current) {
-        if (revision !== undefined) skippedWhilePending.current = Math.max(skippedWhilePending.current ?? -1, revision)
+        skippedWhilePending.current = true
         return
       }
-      if (revision !== undefined && lastCommitted.current !== null && revision <= lastCommitted.current) return
       load()
     })
   }, [subscribeRefresh])
 
   const applyWrite = async (write: LibraryWrite, touchedId: string): Promise<boolean> => {
     // Synchronous re-entry guard: setBusy is async state, so two clicks in the
-    // same frame would both fire applyWrite with one expectedRevision and the
+    // same frame would both fire applyWrite with one expectedHash and the
     // second would 409 — then reload and wipe drafts in other rows.
     if (busyRef.current) return false
     busyRef.current = true
@@ -88,9 +83,8 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
       if (!alive.current) return false
       pendingSelfWrite.current = false
       const skipped = skippedWhilePending.current
-      skippedWhilePending.current = null
+      skippedWhilePending.current = false
       if (result.ok) {
-        lastCommitted.current = result.view.revision
         setView(result.view)
         // Merge only the row this write touched (fresh server value);
         // unsaved drafts in other rows survive — they are never persisted,
@@ -103,21 +97,24 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
           return next
         })
         setStatus({ kind: 'ok', text: '已保存' })
-        // A push skipped while the write was in flight may have carried a
-        // newer external change; reload to pick it up.
-        if (skipped !== null && skipped > result.view.revision) load()
+        // A push skipped while the write was in flight may have carried an
+        // external change; reload to pick it up.
+        if (skipped) load()
         return true
       }
-      skippedWhilePending.current = null
+      skippedWhilePending.current = false
       if (result.conflict) {
-        setStatus({ kind: 'error', text: '配置已被其他窗口修改，已重新加载，请重试。' })
-        load()
+        // The 409 carries the fresh server view: adopt it so the user sees
+        // the concurrent change and can re-apply their edit — not a dead end.
+        if (result.view !== undefined) {
+          setView(result.view)
+          setEntries(structuredClone(result.view.entries))
+        } else {
+          load()
+        }
+        setStatus({ kind: 'error', text: '名册已被其他窗口或外部修改，已加载最新内容，请重试。' })
       } else {
-        // A push skipped while the failed write was in flight may have
-        // carried a newer external change; our write did not advance the
-        // revision, so reload when that skipped change is beyond what we
-        // last committed.
-        if (skipped !== null && lastCommitted.current !== null && skipped > lastCommitted.current) load()
+        if (skipped) load()
         setStatus({ kind: 'error', text: result.message ?? '保存失败' })
       }
       return false
@@ -135,6 +132,10 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
    *  only shows deny. */
   const cleanEntry = (entry: StoredEntry): StoredEntry => {
     const clean: StoredEntry = { ...entry }
+    // Provenance markers are wire-only and must never land in a roster file.
+    delete clean.source
+    // `enabled` persists only when explicitly false (true is the default).
+    if (clean.enabled === undefined || clean.enabled) delete clean.enabled
     if (clean.provider === '') delete clean.provider
     if (clean.model === '') delete clean.model
     if (clean.subagentProvider === '') delete clean.subagentProvider
@@ -166,12 +167,12 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
     }
     // Save against the server truth, not the local snapshot: an unsaved draft
     // in another row must never be silently persisted by this row's button.
-    void applyWrite({ op: 'save', entries: { ...(view?.entries ?? {}), [id]: cleanEntry(entry) }, expectedRevision: view?.revision }, id)
+    void applyWrite({ op: 'save', entries: { ...(view?.entries ?? {}), [id]: cleanEntry(entry) }, expectedHash: view?.hash }, id)
   }
 
   const removeEntry = (id: string): void => {
-    if (!window.confirm(`确认删除子代理 "${id}"？该操作立即写入 settings.yaml。`)) return
-    void applyWrite({ op: 'delete', id, expectedRevision: view?.revision }, id)
+    if (!window.confirm(`确认删除子代理 "${id}"？该操作立即删除其名册文件。`)) return
+    void applyWrite({ op: 'delete', id, expectedHash: view?.hash }, id)
   }
 
   const addEntry = (): void => {
@@ -193,7 +194,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
       setStatus({ kind: 'error', text: '深度上限需为 ≥1 的整数。' })
       return
     }
-    void applyWrite({ op: 'save', entries: { ...serverEntries, [id]: cleanEntry(newEntry) }, expectedRevision: view?.revision }, id).then((ok) => {
+    void applyWrite({ op: 'save', entries: { ...serverEntries, [id]: cleanEntry(newEntry) }, expectedHash: view?.hash }, id).then((ok) => {
       if (alive.current && ok) {
         setNewId('')
         setNewEntry({ description: '', provider: '', model: '', backgroundMode: 'one-shot' })
@@ -260,10 +261,24 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
           <div style={{ fontSize: '15px', fontWeight: 600 }}>子代理库</div>
           <button type="button" onClick={load} style={{ ...buttonStyle, opacity: 0.7 }}>刷新</button>
         </div>
-        <span style={hintStyle}>管理具名角色子代理。保存后热生效：模型可在任意会话通过 list_subagents / delegate 使用。</span>
+        <span style={hintStyle}>管理具名角色子代理。保存即写名册文件并热生效：模型可在任意会话通过 list_subagents / delegate 使用。</span>
       </div>
 
-      {!view.writable && <div style={{ fontSize: '12px', opacity: 0.7 }}>（当前设置只读）</div>}
+      {(view.diagnostics?.length ?? 0) > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', padding: '8px 10px', border: '1px solid var(--dsh-color-warning, #f5a623)', borderRadius: '6px', fontSize: '12px' }}>
+          {view.diagnostics!.map((item, index) => (
+            <div
+              key={index}
+              style={{
+                color: item.severity === 'error' ? 'var(--dsh-color-danger, #e5484d)' : item.severity === 'warning' ? 'var(--dsh-color-warning, #b8860b)' : 'inherit',
+                opacity: item.severity === 'info' ? 0.75 : 1,
+              }}
+            >
+              {item.severity === 'error' ? '错误' : item.severity === 'warning' ? '警告' : '提示'}{item.id !== undefined ? ` [${item.id}]` : ''}：{item.message}
+            </div>
+          ))}
+        </div>
+      )}
 
       {ids.length === 0 && (
         <div style={{ fontSize: '13px', opacity: 0.8 }}>库为空。添加第一个条目开始使用。</div>
@@ -274,16 +289,28 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
         return (
           <div key={id} style={cardStyle}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <span style={{ fontSize: '13px', fontWeight: 600, fontFamily: 'monospace' }}>{id}</span>
+              <span style={{ fontSize: '13px', fontWeight: 600, fontFamily: 'monospace', opacity: entry.enabled === false ? 0.5 : 1 }}>{id}</span>
+              {entry.source === 'legacy' && (
+                <span style={{ fontSize: '10px', padding: '1px 6px', borderRadius: '8px', border: '1px solid var(--dsh-color-border, #3a3f4b)', opacity: 0.7 }}>legacy</span>
+              )}
               <span style={{ fontSize: '11px', opacity: 0.7 }}>
                 {entry.provider || '默认路由'}/{entry.model || '默认模型'}
                 {entry.backgroundMode === 'continuable' ? ' · 可续聊' : ''}
                 {entry.maxDepth !== undefined ? ` · 深度${entry.maxDepth}` : ''}
                 {entry.maxTokens !== undefined ? ` · ${entry.maxTokens}tok` : ''}
+                {entry.enabled === false ? ' · 已停用' : ''}
               </span>
               <span style={{ flex: 1 }} />
-              <button type="button" disabled={busy || !view.writable} onClick={() => removeEntry(id)} style={buttonStyle}>删除</button>
-              <button type="button" disabled={busy || !view.writable} onClick={() => updateEntry(id, entry)} style={buttonStyle}>保存</button>
+              <label style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={entry.enabled !== false}
+                  onChange={(event) => setEntries({ ...entries, [id]: { ...entry, enabled: event.target.checked ? undefined : false } })}
+                />
+                启用
+              </label>
+              <button type="button" disabled={busy} onClick={() => removeEntry(id)} style={buttonStyle}>删除</button>
+              <button type="button" disabled={busy} onClick={() => updateEntry(id, entry)} style={buttonStyle}>保存</button>
             </div>
 
             <div style={rowStyle}>
@@ -410,7 +437,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <span style={{ fontSize: '13px', fontWeight: 600 }}>新增子代理</span>
           <span style={{ flex: 1 }} />
-          <button type="button" disabled={busy || !view.writable} onClick={addEntry} style={buttonStyle}>添加</button>
+          <button type="button" disabled={busy} onClick={addEntry} style={buttonStyle}>添加</button>
         </div>
         <div style={rowStyle}>
           <span style={labelStyle}>ID</span>
@@ -514,7 +541,10 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
         </div>
       )}
 
-      <div style={{ fontSize: '11px', opacity: 0.55, paddingTop: '4px' }}>配置存储于 $DSH_HOME/settings.yaml 的 subagent-library.entries。</div>
+      <div style={{ fontSize: '11px', opacity: 0.55, paddingTop: '4px' }}>
+        配置存储于名册目录 {view.dir || '~/.dsh/subagents'}（每具名子代理一个 &lt;id&gt;.yaml，可手编、热生效）。
+        settings.yaml 中的旧 entries 仅作迁移兜底读取，文件优先生效。
+      </div>
     </div>
   )
 }

@@ -13,12 +13,13 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import { LibrarySettings, type LibrarySettingsInjected } from './LibrarySettings.tsx'
+import { decorateSettingsNavIcon } from './nav-icon.ts'
 import { en, zh } from './locales.ts'
 
 const NS = 'subagent-library'
 const API_PATH = '/subagent-library/api'
 
-/** Wire view of one library entry as stored in the settings document. */
+/** Wire view of one library entry as stored in a roster file (or legacy). */
 export interface StoredEntry {
   description?: string
   provider?: string
@@ -29,26 +30,42 @@ export interface StoredEntry {
   toolFilter?: { allow?: string[]; deny?: string[] }
   maxDepth?: number
   backgroundMode?: 'one-shot' | 'continuable'
+  /** Present only when the entry is disabled (`enabled: false`). */
+  enabled?: boolean
+  /** Present only for rows still served from the legacy settings document. */
+  source?: 'legacy'
+}
+
+export interface LibraryDiagnostic {
+  severity: 'error' | 'warning' | 'info'
+  id?: string
+  file?: string
+  message: string
 }
 
 export interface LibraryView {
   writable: boolean
-  revision: number
+  /** Roster directory the files live in (informational, shown in the UI). */
+  dir: string
+  /** Stable content hash of the roster rows — the write guard. */
+  hash: string
   entries: Record<string, StoredEntry>
+  diagnostics?: LibraryDiagnostic[]
 }
 
 export type LibraryWrite =
-  | { op: 'save'; entries: Record<string, StoredEntry>; expectedRevision?: number }
-  | { op: 'delete'; id: string; expectedRevision?: number }
+  | { op: 'save'; entries: Record<string, StoredEntry>; expectedHash?: string }
+  | { op: 'delete'; id: string; expectedHash?: string }
 
 export type LibraryWriteResult =
   | { ok: true; view: LibraryView }
-  | { ok: false; conflict?: boolean; message?: string }
+  // A conflict carries the fresh view so the editor can merge and let the
+  // user retry instead of staring at a bare error (v0.3.0 design review).
+  | { ok: false; conflict?: boolean; message?: string; view?: LibraryView }
 
 /** Host error codes that carry no `message`; map them to user-facing text. */
 const ERROR_TEXT: Record<string, string> = {
   'not-ready': '设置服务尚未就绪，请稍后重试。',
-  'readonly': '设置当前为只读，无法写入。',
   'content-type-json-required': '请求被拒绝：写入只接受 JSON。',
   'cross-origin-forbidden': '请求被拒绝：跨源写入。',
   'body-too-large': '请求体超过 1 MiB 上限。',
@@ -56,20 +73,41 @@ const ERROR_TEXT: Record<string, string> = {
   'entries-object-required': '缺少 entries 对象。',
   'invalid-id': '条目 ID 非法。',
   'unknown-op': '未知操作。',
+  'roster-unreadable': '名册目录读取失败。',
+  'write-failed': '名册文件写入失败。',
 }
+
+interface WireView {
+  ok?: boolean
+  writable?: boolean
+  dir?: string
+  hash?: string
+  entries?: Record<string, StoredEntry>
+  diagnostics?: LibraryDiagnostic[]
+  error?: string
+  message?: string
+  view?: WireView
+}
+
+const parseView = (value: WireView): LibraryView => ({
+  writable: value.writable ?? true,
+  dir: value.dir ?? '',
+  hash: value.hash ?? '',
+  entries: value.entries ?? {},
+  diagnostics: value.diagnostics ?? [],
+})
 
 async function readView(): Promise<LibraryView> {
   const response = await fetch(API_PATH, { cache: 'no-store' })
   const body: unknown = await response.json()
-  if (!response.ok || typeof body !== 'object' || body === null || (body as { ok?: boolean }).ok !== true) {
-    const error = (body as { error?: string } | null)?.error
+  if (!response.ok || typeof body !== 'object' || body === null || (body as WireView).ok !== true) {
+    const error = (body as WireView | null)?.error
     // A diagnostic `message` (e.g. settings-seam registration failure) wins
     // over the generic per-code text.
-    const message = (body as { message?: string } | null)?.message
+    const message = (body as WireView | null)?.message
     throw new Error(message ?? (error !== undefined ? ERROR_TEXT[error] : undefined) ?? '子代理库接口不可用（插件未加载？）')
   }
-  const value = body as { writable: boolean; revision: number; entries: Record<string, StoredEntry> }
-  return { writable: value.writable, revision: value.revision, entries: value.entries ?? {} }
+  return parseView(body as WireView)
 }
 
 async function writeView(write: LibraryWrite): Promise<LibraryWriteResult> {
@@ -81,14 +119,16 @@ async function writeView(write: LibraryWrite): Promise<LibraryWriteResult> {
       cache: 'no-store',
     })
     const body: unknown = await response.json()
-    if (response.status === 409) return { ok: false, conflict: true }
-    if (!response.ok || typeof body !== 'object' || body === null || (body as { ok?: boolean }).ok !== true) {
-      const message = (body as { message?: string } | null)?.message
-      const error = (body as { error?: string } | null)?.error
-      return { ok: false, message: message ?? (error !== undefined ? ERROR_TEXT[error] : undefined) ?? '保存失败' }
+    const wire = (typeof body === 'object' && body !== null ? body : {}) as WireView
+    if (response.status === 409) {
+      // The fresh view rides along: the editor merges it so the user sees the
+      // concurrent change and can re-apply theirs instead of blind-retrying.
+      return { ok: false, conflict: true, view: wire.view !== undefined ? parseView(wire.view) : undefined }
     }
-    const value = body as { writable: boolean; revision: number; entries: Record<string, StoredEntry> }
-    return { ok: true, view: { writable: value.writable, revision: value.revision, entries: value.entries ?? {} } }
+    if (!response.ok || wire.ok !== true) {
+      return { ok: false, message: wire.message ?? (wire.error !== undefined ? ERROR_TEXT[wire.error] : undefined) ?? '保存失败' }
+    }
+    return { ok: true, view: parseView(wire) }
   } catch (error) {
     return { ok: false, message: String(error) }
   }
@@ -129,4 +169,6 @@ export function apply(ctx: ClientContext): void {
     label: () => '子代理库',
     inject: (): LibrarySettingsInjected => ({ readView, writeView, subscribeRefresh }),
   }, LibrarySettings))
+
+  decorateSettingsNavIcon(ctx)
 }

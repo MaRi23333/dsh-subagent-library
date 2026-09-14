@@ -1,13 +1,15 @@
 /**
  * Settings-API route tests (SUB-TEST-001): the write-path negative matrix
- * (415 / 403 / 413 / 400 / 409), entry-id validation incl. prototype-polluting
- * keys, replace-semantics persistence, and the settingsFailure diagnostic.
- * All traffic goes through the real handler mounted by apply() against
- * in-memory doubles — no network, files or credentials.
+ * (415 / 403 / 413 / 400 / 409 / 500), entry-id validation incl.
+ * prototype-polluting keys, file-roster save/delete semantics, hash conflict
+ * handling, and the settingsFailure diagnostic. All traffic goes through the
+ * real handler mounted by apply() against in-memory doubles — no network,
+ * real files or credentials.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { API_PATH, dispatch, jsonBody, makeHost, postJson, type MockHost } from './helpers.ts'
+import { parse as parseYaml } from 'yaml'
 
 const ENTRY = { description: 'fake role for tests' }
 
@@ -15,7 +17,7 @@ function hostWith(options: Parameters<typeof makeHost>[0] = {}): MockHost {
   return makeHost({ baseEntries: { 'good-entry': { ...ENTRY } }, ...options })
 }
 
-test('GET returns the view and filters schema-invalid entry ids out', async () => {
+test('GET returns the roster view and filters schema-invalid legacy ids out', async () => {
   // A hand-written key like `bad_key` passes z.dict but violates ENTRY_ID;
   // it must be hidden from every view (red-team finding #2).
   const host = hostWith({
@@ -26,7 +28,41 @@ test('GET returns the view and filters schema-invalid entry ids out', async () =
   const body = jsonBody(res)
   assert.equal(body['ok'], true)
   assert.equal(body['writable'], true)
+  assert.equal(typeof body['hash'], 'string')
+  assert.equal(body['dir'], '/roster')
   assert.deepEqual(Object.keys(body['entries'] as Record<string, unknown>), ['good-entry'])
+})
+
+test('GET surfaces roster-file diagnostics alongside the surviving entries', async () => {
+  const host = makeHost({
+    rosterFiles: {
+      '/roster/broken.yaml': 'description: [unclosed',
+      '/roster/unknown-key.yaml': 'description: x\ntypo_field: y\n',
+    },
+  })
+  const res = await dispatch(host.web, API_PATH)
+  assert.equal(res.status, 200)
+  const body = jsonBody(res)
+  assert.deepEqual(Object.keys(body['entries'] as Record<string, unknown>), [])
+  const diagnostics = body['diagnostics'] as Array<{ severity: string }>
+  assert.equal(diagnostics.length, 2)
+  assert.ok(diagnostics.every((item) => item.severity === 'error'))
+})
+
+test('GET marks a legacy row shadowed by a file with an info diagnostic', async () => {
+  const host = makeHost({
+    baseEntries: { shadowed: { description: 'old copy' } },
+    rosterFiles: { '/roster/shadowed.yaml': 'description: new copy\n' },
+  })
+  const res = await dispatch(host.web, API_PATH)
+  assert.equal(res.status, 200)
+  const body = jsonBody(res)
+  const shadowed = (body['entries'] as Record<string, Record<string, unknown>>)['shadowed']
+  assert.equal(shadowed?.['description'], 'new copy', 'the file wins')
+  assert.equal(shadowed?.['source'], undefined, 'the shadowing row serves from the file, not legacy')
+  const diagnostics = body['diagnostics'] as Array<{ severity: string, id?: string }>
+  const info = diagnostics.find((item) => item.id === 'shadowed')
+  assert.equal(info?.severity, 'info')
 })
 
 test('GET surfaces the settingsFailure diagnostic as 503 + message', async () => {
@@ -97,6 +133,8 @@ test('POST save rejects schema-invalid entry ids (400 invalid-entry-id)', async 
     { 'bad_key': { ...ENTRY } },
     { BadKey: { ...ENTRY } },
     { '-leading-dash': { ...ENTRY } },
+    { con: { ...ENTRY } },
+    { [`${'a'.repeat(65)}`]: { ...ENTRY } },
   ]
   for (const entries of cases) {
     const host = hostWith()
@@ -106,14 +144,26 @@ test('POST save rejects schema-invalid entry ids (400 invalid-entry-id)', async 
   }
 })
 
-test('POST save rejects entries failing the Config schema (400 rejected)', async () => {
+test('POST save rejects entries failing the entry schema (400 rejected)', async () => {
   const host = hostWith()
   const res = await postJson(host.web, { op: 'save', entries: { 'no-description': {} } })
   assert.equal(res.status, 400)
   assert.equal(jsonBody(res)['error'], 'rejected')
 })
 
-test('POST save wholesale-replaces entries and preserves other user keys', async () => {
+test('POST save rejects unknown fields loudly instead of dropping them (400 rejected)', async () => {
+  // A typo'd field must not silently vanish into the default.
+  const host = hostWith()
+  const res = await postJson(host.web, {
+    op: 'save',
+    entries: { typo: { description: 'x', backgroundmode: 'continuable' } },
+  })
+  assert.equal(res.status, 400)
+  assert.equal(jsonBody(res)['error'], 'rejected')
+  assert.match(String(jsonBody(res)['message']), /backgroundmode/)
+})
+
+test('POST save snapshot writes files and unsets legacy rows absent from the payload', async () => {
   const host = hostWith({
     user: { subagentProvider: 'fork', entries: { 'stale-entry': { ...ENTRY } } },
   })
@@ -121,22 +171,42 @@ test('POST save wholesale-replaces entries and preserves other user keys', async
   assert.equal(res.status, 200)
   const body = jsonBody(res)
   assert.deepEqual(Object.keys(body['entries'] as Record<string, unknown>), ['fresh-entry'])
-  // The replace must spread the previous user section underneath (design #9).
+  // The fresh row became a roster file…
+  const files = host.fs.files()
+  const written = files['/roster/fresh-entry.yaml']
+  assert.match(String(written), /description: fake role for tests/)
+  // …and the stale legacy row was removed from settings (files win — a
+  // surviving legacy copy would resurrect the entry on the next read).
+  assert.equal((host.settings.userSection()?.['entries'] as Record<string, unknown>)?.['stale-entry'], undefined)
+  // Other top-level user keys survive the legacy unset.
   assert.equal(host.settings.userSection()?.['subagentProvider'], 'fork')
-  assert.equal(body['revision'], 1)
 })
 
-test('POST save with a stale expectedRevision conflicts (409)', async () => {
+test('POST save carries enabled:false into the file and the wire view', async () => {
   const host = hostWith()
-  const res = await postJson(host.web, { op: 'save', entries: { 'new-entry': { ...ENTRY } }, expectedRevision: 99 })
-  assert.equal(res.status, 409)
-  assert.equal(jsonBody(res)['error'], 'conflict')
-})
-
-test('POST save ignores a non-integer expectedRevision (documented leniency)', async () => {
-  const host = hostWith()
-  const res = await postJson(host.web, { op: 'save', entries: { 'new-entry': { ...ENTRY } }, expectedRevision: 0.5 })
+  const res = await postJson(host.web, {
+    op: 'save',
+    entries: { sleeping: { ...ENTRY, enabled: false } },
+  })
   assert.equal(res.status, 200)
+  const body = jsonBody(res)
+  assert.equal((body['entries'] as Record<string, Record<string, unknown>>)['sleeping']?.['enabled'], false)
+  const written = host.fs.files()['/roster/sleeping.yaml']
+  assert.deepEqual(parseYaml(String(written) as string), {
+    description: 'fake role for tests',
+    enabled: false,
+  })
+})
+
+test('POST save strips the editor provenance marker before persisting', async () => {
+  const host = hostWith()
+  const res = await postJson(host.web, {
+    op: 'save',
+    entries: { promoted: { ...ENTRY, source: 'legacy' } },
+  })
+  assert.equal(res.status, 200)
+  const written = parseYaml(String(host.fs.files()['/roster/promoted.yaml']) as string) as Record<string, unknown>
+  assert.equal(written['source'], undefined)
 })
 
 test('POST save accepts any toolFilter names — delegate-time restrict is the enforcement', async () => {
@@ -159,22 +229,48 @@ test('POST save accepts any toolFilter names — delegate-time restrict is the e
   assert.equal(jsonBody(res)['ok'], true)
 })
 
-test('POST delete removes an entry; invalid delete ids are rejected', async () => {
-  const host = hostWith({ user: { entries: { doomed: { ...ENTRY } } } })
-  const ok = await postJson(host.web, { op: 'delete', id: 'doomed' })
-  assert.equal(ok.status, 200)
-  assert.deepEqual(Object.keys(jsonBody(ok)['entries'] as Record<string, unknown>), [])
+test('POST save with a stale expectedHash conflicts (409) and carries the fresh view', async () => {
+  const host = hostWith()
+  const res = await postJson(host.web, { op: 'save', entries: { 'new-entry': { ...ENTRY } }, expectedHash: 'stale-hash' })
+  assert.equal(res.status, 409)
+  const body = jsonBody(res)
+  assert.equal(body['error'], 'conflict')
+  // k3-helper review: the 409 must carry the fresh view so the editor can
+  // merge and re-apply instead of blind-retrying.
+  assert.ok((body['entries'] as Record<string, unknown>)['good-entry'] !== undefined)
+  assert.equal(typeof body['hash'], 'string')
+})
+
+test('POST save ignores a non-string expectedHash (documented leniency)', async () => {
+  const host = hostWith()
+  const res = await postJson(host.web, { op: 'save', entries: { 'new-entry': { ...ENTRY } }, expectedHash: 0.5 })
+  assert.equal(res.status, 200)
+})
+
+test('POST delete removes the file and the legacy copy; invalid ids are rejected', async () => {
+  const host = hostWith({ baseEntries: {}, user: { entries: { doomed: { ...ENTRY } } }, rosterFiles: { '/roster/filed.yaml': 'description: x\n' } })
+  const doomed = await postJson(host.web, { op: 'delete', id: 'doomed' })
+  assert.equal(doomed.status, 200)
+  assert.deepEqual(Object.keys(jsonBody(doomed)['entries'] as Record<string, unknown>), ['filed'])
+  assert.equal((host.settings.userSection()?.['entries'] as Record<string, unknown>)?.['doomed'], undefined)
+
+  const filed = await postJson(host.web, { op: 'delete', id: 'filed' })
+  assert.equal(filed.status, 200)
+  assert.deepEqual(Object.keys(jsonBody(filed)['entries'] as Record<string, unknown>), [])
+  assert.equal(host.fs.files()['/roster/filed.yaml'], undefined)
 
   const bad = await postJson(host.web, { op: 'delete', id: '__proto__' })
   assert.equal(bad.status, 400)
   assert.equal(jsonBody(bad)['error'], 'invalid-id')
 })
 
-test('POST rejects writes in readonly mode (403 readonly)', async () => {
+test('readonly settings no longer block roster writes; legacy-only deletes just skip the unset', async () => {
+  // Files are not the settings service: FS errors surface per op (500), and a
+  // read-only settings service only means the legacy copy cannot be unset.
   const host = hostWith({ writable: false })
-  const res = await postJson(host.web, { op: 'save', entries: { 'new-entry': { ...ENTRY } } })
-  assert.equal(res.status, 403)
-  assert.equal(jsonBody(res)['error'], 'readonly')
+  const save = await postJson(host.web, { op: 'save', entries: { 'new-entry': { ...ENTRY } } })
+  assert.equal(save.status, 200)
+  assert.ok(host.fs.files()['/roster/new-entry.yaml'] !== undefined)
 })
 
 test('POST rejects an unknown op (400 unknown-op)', async () => {

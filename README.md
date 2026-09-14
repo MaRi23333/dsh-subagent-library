@@ -28,7 +28,7 @@ DeepSeek Harness 的具名子代理库插件：把常用角色（代码审查、
 
 任何会话（任意 agent preset）直接可用，**不需要 slash 命令**；`/subagent` 命令只是给人类在命令面板里快速查看名册用的。
 
-新增条目也不用手写 YAML：直接让主会话 agent 帮你配（它编辑 `$DSH_HOME/settings.yaml`，热生效），或在设置页里可视化编辑。
+新增条目也不用手写配置：直接让主会话 agent 帮你配，或在设置页里可视化编辑；0.3 起 名册存储为**一个具名子代理一个 YAML 文件**（默认目录 `~/.dsh/subagents/`），热生效、可单独注释与版本管理。
 
 > 与官方能力的区分：官方 `subagent` 工具是临时派活（每次现场描述任务），官方 `list_agents` 列的是正在运行的子代实例；本插件维护的是**持久化的具名角色名册**（设置页可视化编辑、热生效），模型用 `list_subagents` 选人、`delegate` 按 id 派活。
 
@@ -51,28 +51,43 @@ DeepSeek Harness 的具名子代理库插件：把常用角色（代码审查、
 
 ## 配置
 
-`$DSH_HOME/settings.yaml`（热生效，无需重启）：
+0.3 起，名册是一个目录，**一个具名子代理一个文件**（热生效，无需重启）：
+
+```
+~/.dsh/subagents/
+  k3-reviewer.yaml     # id = 文件名
+  glm-reader.yaml
+  ...
+```
+
+`~/.dsh/settings.yaml` 里只保留插件级配置：
 
 ```yaml
 subagent-library:
-  entries:
-    k3-reviewer:
-      description: Kimi K3-256K 独立只读审核，支持图片视觉走查
-      provider: kimi-coding
-      model: k3-256k
-      persona: |
-        你是运行在 Kimi K3-256K 上的独立审核 agent……
-      toolFilter:
-        deny: [write, edit, todo_write, create_goal, update_goal, subagent, subagent_fork, send_message, interrupt_agent, workflow, ralph, list_subagents, delegate]
-      maxDepth: 1
-      backgroundMode: continuable
+  # 名册目录；默认 ~/.dsh/subagents，支持 ~ 与相对路径（相对 ~/.dsh）
+  entriesDir: ~/.dsh/subagents
+  # entries:（可选，遗留）0.2.x 的内联名册在 0.3.x 仍只读兜底，文件优先生效；0.4 移除
+```
+
+单个条目文件（`k3-reviewer.yaml`）：
+
+```yaml
+description: Kimi K3-256K 独立只读审核，支持图片视觉走查
+provider: kimi-coding
+model: k3-256k
+persona: |
+  你是运行在 Kimi K3-256K 上的独立审核 agent……
+toolFilter:
+  deny: [write, edit, todo_write, create_goal, update_goal, subagent, subagent_fork, send_message, interrupt_agent, workflow, ralph, list_subagents, delegate]
+maxDepth: 1
+backgroundMode: continuable
 ```
 
 条目字段：
 
 | 字段 | 必填 | 说明 |
 |---|---|---|
-| `id`（dict 键） | 是 | `[a-z0-9][a-z0-9-]*`，如 `k3-reviewer` |
+| `id`（= 文件名） | 是 | `<id>.yaml`，id 须匹配 `[a-z0-9][a-z0-9-]*`，长度 ≤ 64（Windows 保留设备名 con/nul/aux… 不可用） |
 | `description` | 是 | 角色描述，`list_subagents` 展示给模型 |
 | `provider` | 否 | **LLM 路由**（如 `deepseek-official`、`kimi-coding`）；缺省用调用方默认 |
 | `model` | 否 | LLM 模型 id；缺省用调用方的会话默认模型 |
@@ -81,7 +96,12 @@ subagent-library:
 | `persona` | 否 | 子代理角色提示词。注意 persona 走严格的 `{{…}}` 模板插值（与部署 persona 同语义）——出现未注册的变量（如 `{{user}}`）会让子代理激活失败 |
 | `toolFilter` | 否 | `allow`/`deny` 工具名单（只读角色用 deny 禁写类工具）。**只读/受限角色建议把 `list_subagents`/`delegate` 也列入 deny**，防止子代理被全局提示词教去链式再派活。名单在**委派时按调用方会话的可限制集合**解析（不是"可见"）：不可应用的名字被忽略，并在派活结果与 `list_subagents` 目录里标注原因（`本会话不存在` / `本会话专属工具`）——共享条目不会因为某个会话缺该工具而整次派活失败。**`allow` 名单若在本会话全部不可应用则拒绝委派**（否则"只留这些"会变成"什么都不留"）。旧注册表无 `view()` 时退回可见性判定，此时 scope-local 名仍会让委派明确报错。保存阶段不做校验 |
 | `maxDepth` | 否 | 委派深度上限；**缺省 = 传输层支持 depthLimit 时默认 3**（与官方 subagent 工具对齐，防链式递归派活；harness 自身无全局深度上限），不支持 depthLimit 的传输层则不设上限 |
-| `backgroundMode` | 否 | `one-shot`（默认）/ `continuable`（可续聊） |
+| `backgroundMode` | 否 | `one-shot`（默认，文件中省略）/ `continuable`（可续聊） |
+| `enabled` | 否 | 文件内写 `enabled: false` 停用该条目（目录与设置页仍可见，`delegate` 拒绝派活）；省略或 `true` 为启用 |
+
+**坏文件不炸名册**：解析/校验失败的文件被跳过，错误进入 `list_subagents` 输出、`/subagent` 命令与设置页的 diagnostics；`.yaml`/`.yml` 同名冲突、大写文件名等也会以诊断形式报出。
+
+**从 0.2.x 迁移**：首次使用名册时，settings.yaml 里已有的 `entries` 会**逐条**导出为 `<id>.yaml`（已存在同名文件的条目跳过，绝不覆盖手写文件）；settings 里的旧条目保留作回滚副本（ downgrade 插件时仍可用），文件优先生效。确认无误后可自行删除 settings 中的旧 `entries` 段（0.4 将停止读取）。
 
 > 注意区分两个 provider 概念：`provider` 指 LLM 路由（`agentOptions.provider`），
 > `subagentProvider` 指子代理传输层（`ctx.subagents` 注册名，如 `spawn`/`fork`/`acp`）。
@@ -110,13 +130,14 @@ npx @deepseek-ai/dsh plugin --profile web add /absolute/path/to/dsh-subagent-lib
 ```
 
 > 仓库已提交 `lib/` 构建产物，git 安装无需本地构建；改源码后运行 `pnpm run build` 再重启即可。
-> 库内条目的增删改（`$DSH_HOME/settings.yaml`）**热生效**，无需重启。
+> 名册（`~/.dsh/subagents/` 下的条目文件）**热生效**，无需重启。
 
 ## 设置页
 
 Settings → 设置 里新增「子代理库」卡片：可视化增删改条目（描述 / Provider / 模型 /
-传输层 subagentProvider / 输出上限 maxTokens / 禁用工具 / 深度 / 后台模式 / 角色提示词），写回 `$DSH_HOME/settings.yaml`，热生效。
-新增卡与条目卡字段一致（ID / 描述 / Provider / 模型 / 传输层 / 输出上限 / 禁用工具 / 深度 / 后台模式 / 角色提示词），一次配置完整角色。
+传输层 subagentProvider / 输出上限 maxTokens / 禁用工具 / 深度 / 后台模式 / 角色提示词 / 启用开关），写回名册目录下的 `<id>.yaml`，热生效。
+新增卡与条目卡字段一致（ID / 描述 / Provider / 模型 / 传输层 / 输出上限 / 禁用工具 / 深度 / 后台模式 / 角色提示词），一次配置完整角色；
+legacy 条目带 `legacy` 徽标，保存时自动晋升为文件。
 
 > **安全提示**：子代理库的设置接口（`/subagent-library/api`）遵循 DSH Web Host 的本地可信边界，插件自身不含独立身份验证层。若将 DSH Web 绑定到局域网 / 公网 / 反向代理，请在外层配置认证与访问控制，不要把该接口暴露给不可信客户端——子代理 persona 与配置可能包含内部工作规则。
 
@@ -124,7 +145,7 @@ Settings → 设置 里新增「子代理库」卡片：可视化增删改条目
 
 - 工具注册在 **host 平面**：不依赖任何 agent preset，切 preset 不会丢；
 - 派发走标准 `ctx.subagents` 缝（spawn 等 provider），子代理沿用 harness 语义：审批固定 never、沙箱继承父会话、深度上限、continuable 支持；
-- 条目解析每次操作实时读取 settings，热编辑立即生效。
+- 名册每次操作实时读目录（无缓存、无 watcher），改文件立即生效；单条目写入为原子操作（临时文件 + rename 重试），多写者后写赢。
 
 ## 开发
 

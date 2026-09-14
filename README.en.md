@@ -21,7 +21,7 @@ A named subagent roster plugin for the [DeepSeek Harness](https://github.com/dee
 
 Available in every conversation (any agent preset), **no slash command needed**; the `/subagent` command is only for humans to peek at the roster in the command palette.
 
-Adding entries needs no hand-written YAML either: ask the main agent to do it (it edits `$DSH_HOME/settings.yaml`, hot-reloaded), or edit visually in the settings page.
+Adding entries needs no hand-written config either: ask the main agent to do it, or edit visually in the settings page. Since 0.3 the roster is stored as **one YAML file per named subagent** (default directory `~/.dsh/subagents/`), hot-reloaded, comment-friendly and versionable per file.
 
 > Distinction from the official capabilities: the official `subagent` tool dispatches ad-hoc tasks (you describe the task each time), and the official `list_agents` lists *running* child instances; this plugin maintains a **persistent named roster** (edited visually in a settings page, hot-reloaded). The model picks an entry with `list_subagents` and dispatches by id with `delegate`.
 
@@ -44,28 +44,44 @@ Adding entries needs no hand-written YAML either: ask the main agent to do it (i
 
 ## Configuration
 
-`$DSH_HOME/settings.yaml` (hot-reloaded, no restart needed):
+Since 0.3 the roster is a directory with **one file per named subagent** (hot-reloaded, no restart needed):
+
+```
+~/.dsh/subagents/
+  k3-reviewer.yaml     # id = file name
+  glm-reader.yaml
+  ...
+```
+
+`~/.dsh/settings.yaml` only keeps the plugin-level options:
 
 ```yaml
 subagent-library:
-  entries:
-    k3-reviewer:
-      description: Independent read-only review on Kimi K3-256K, with image walkthroughs
-      provider: kimi-coding
-      model: k3-256k
-      persona: |
-        You are an independent review agent running on Kimi K3-256K…
-      toolFilter:
-        deny: [write, edit, todo_write, create_goal, update_goal, subagent, subagent_fork, send_message, interrupt_agent, workflow, ralph, list_subagents, delegate]
-      maxDepth: 1
-      backgroundMode: continuable
+  # Roster directory; default ~/.dsh/subagents, supports ~ and paths relative to ~/.dsh
+  entriesDir: ~/.dsh/subagents
+  # entries: (optional, legacy) the 0.2.x inline roster is still read as a
+  # read-only fallback throughout 0.3.x — files win; removal planned for 0.4
+```
+
+One entry file (`k3-reviewer.yaml`):
+
+```yaml
+description: Independent read-only review on Kimi K3-256K, with image walkthroughs
+provider: kimi-coding
+model: k3-256k
+persona: |
+  You are an independent review agent running on Kimi K3-256K…
+toolFilter:
+  deny: [write, edit, todo_write, create_goal, update_goal, subagent, subagent_fork, send_message, interrupt_agent, workflow, ralph, list_subagents, delegate]
+maxDepth: 1
+backgroundMode: continuable
 ```
 
 Entry fields:
 
 | Field | Required | Notes |
 |---|---|---|
-| `id` (dict key) | yes | `[a-z0-9][a-z0-9-]*`, e.g. `k3-reviewer` |
+| `id` (= file name) | yes | `<id>.yaml`; the id must match `[a-z0-9][a-z0-9-]*`, length ≤ 64 (Windows reserved device names con/nul/aux… are rejected) |
 | `description` | yes | Role description, shown to the model by `list_subagents` |
 | `provider` | no | **LLM route** (e.g. `deepseek-official`, `kimi-coding`); defaults to the caller's default |
 | `model` | no | LLM model id; defaults to the caller's session model |
@@ -74,7 +90,12 @@ Entry fields:
 | `persona` | no | Subagent system prompt. Personas go through strict `{{…}}` template interpolation (same semantics as deployment personas) — an unregistered variable (e.g. `{{user}}`) fails child activation |
 | `toolFilter` | no | `allow`/`deny` tool-name lists (deny write-class tools for read-only roles). **Read-only/restricted roles should also deny `list_subagents`/`delegate`** so children are not taught by the global prompt to re-delegate in a chain. Names are resolved against the **calling session's restrictable set** at delegation (not "visibility"): names that session cannot apply are ignored and annotated with the reason (`本会话不存在` / `本会话专属工具`) in the delegate result and the `list_subagents` catalog — one shared entry never fails a whole delegation because a session lacks a tool. **An `allow` list that no name applies to refuses the delegation** (otherwise "keep only these" would silently become "keep nothing"). Registries without `view()` fall back to visibility, where scope-local names still make delegation fail loudly. Saves are not pre-validated |
 | `maxDepth` | no | Delegation depth cap; **when unset, defaults to 3 when the transport supports depthLimit** (aligned with the official subagent tool to prevent chained recursive delegation; the harness itself has no global depth cap). Transports without depthLimit stay uncapped |
-| `backgroundMode` | no | `one-shot` (default) / `continuable` (resumable) |
+| `backgroundMode` | no | `one-shot` (default, omitted in files) / `continuable` (resumable) |
+| `enabled` | no | Write `enabled: false` to disable an entry (it stays visible in the directory and the settings page; `delegate` refuses it); omit or set `true` to enable |
+
+**Broken files never brick the roster**: files that fail to parse or validate are skipped, and the reason is surfaced as diagnostics in `list_subagents`, the `/subagent` command, and the settings page; `.yaml`/`.yml` duplicate ids and wrongly-cased file names are reported the same way.
+
+**Migrating from 0.2.x**: on first roster use, the existing `entries` in settings.yaml are exported **entry by entry** to `<id>.yaml` (ids with an existing file are skipped — hand-written files are never overwritten); the legacy settings copies are KEPT as a rollback (downgrading the plugin keeps working), and files take precedence. Once confirmed, delete the legacy `entries` section from settings yourself (reading it is removed in 0.4).
 
 > Mind the two provider concepts: `provider` is the LLM route (`agentOptions.provider`),
 > while `subagentProvider` is the subagent transport (`ctx.subagents` registration name, e.g. `spawn`/`fork`/`acp`).
@@ -104,16 +125,18 @@ npx @deepseek-ai/dsh plugin --profile web add /absolute/path/to/dsh-subagent-lib
 
 > The repo commits `lib/` build artifacts, so git installs need no local build; after
 > changing sources run `pnpm run build` and restart.
-> Adding/removing/editing roster entries (`$DSH_HOME/settings.yaml`) is **hot-reloaded** — no restart.
+> Roster edits (files under `~/.dsh/subagents/`) are **hot-reloaded** — no restart.
 
 ## Settings page
 
 A **Subagent Library** card appears under Settings: visually add/edit/remove entries
 (description / provider / model / subagentProvider transport / maxTokens / denied tools /
-depth / background mode / persona), written back to `$DSH_HOME/settings.yaml`, hot-reloaded.
+depth / background mode / persona / enable switch), written back to `<id>.yaml` in the
+roster directory, hot-reloaded.
 The add card offers the same fields as an entry card (ID / description / provider / model /
 transport / output cap / denied tools / depth / background mode / persona), so a role is
-fully configured in one step.
+fully configured in one step; legacy entries carry a `legacy` badge and are promoted to
+files on save.
 
 > **Security note:** the roster settings endpoint (`/subagent-library/api`) follows the
 > DSH Web Host's local trust boundary — the plugin itself adds no separate authentication
@@ -125,7 +148,7 @@ fully configured in one step.
 
 - Tools register on the **host plane**: no dependency on any agent preset, and switching presets never loses them;
 - Dispatch goes through the standard `ctx.subagents` seam (providers such as `spawn`), so subagents keep harness semantics: approval pinned to never, sandbox inherited from the parent session, depth caps, continuable support;
-- Entries are re-resolved from settings on every operation — hot edits take effect immediately.
+- Entries are re-resolved from the roster directory on every operation (no cache, no watcher) — file edits take effect immediately; single-entry writes are atomic (temp file + rename with retries), concurrent writers are last-write-wins.
 
 ## Development
 

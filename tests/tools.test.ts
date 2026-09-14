@@ -218,3 +218,46 @@ test('both tools throw the settingsFailure diagnostic when registration failed',
     /注册失败/,
   )
 })
+
+test('list_subagents marks disabled entries and surfaces roster diagnostics', async () => {
+  const host = makeHost({
+    knownTools: ['write'],
+    rosterFiles: {
+      '/roster/off.yaml': 'description: disabled role\nenabled: false\n',
+      '/roster/on.yaml': 'description: live role\n',
+      '/roster/broken.yaml': 'description: [oops\n',
+    },
+  })
+  const rows = (await tool(host, 'list_subagents').execute({}, EXEC)) as Array<Record<string, unknown>>
+  const off = rows.find((row) => row['id'] === 'off')
+  assert.equal(off?.['enabled'], false)
+  assert.equal(rows.find((row) => row['id'] === 'on')?.['enabled'], undefined)
+  const diagnostics = rows.find((row) => row['diagnostics'] !== undefined) as Record<string, unknown> | undefined
+  assert.ok(diagnostics !== undefined, 'broken roster files must be visible to the model')
+  assert.match(JSON.stringify(diagnostics), /\[broken\]/)
+})
+
+test('delegate refuses a disabled entry before any transport work', async () => {
+  const host = makeHost({
+    subagentProviders: ['spawn'],
+    rosterFiles: { '/roster/off.yaml': 'description: disabled role\nenabled: false\n' },
+  })
+  await assert.rejects(
+    () => tool(host, 'delegate').execute({ library_id: 'off', prompt: 'x' }, EXEC),
+    /entry "off" is disabled/,
+  )
+  assert.equal(host.subagentStarts.length, 0)
+})
+
+test('legacy base entries migrate into roster files on first read and keep serving', async () => {
+  const host = makeHost({
+    baseEntries: { migrated: { description: 'from settings', provider: 'qwen' } },
+  })
+  const rows = (await tool(host, 'list_subagents').execute({}, EXEC)) as Array<Record<string, unknown>>
+  assert.deepEqual(rows.map((row) => row['id']), ['migrated'])
+  // The migration wrote the file; the row now comes from the roster file, and
+  // the legacy copy is still in settings (rollback copy until 0.4.0).
+  assert.match(String(host.fs.files()['/roster/migrated.yaml']), /from settings/)
+  const second = (await tool(host, 'list_subagents').execute({}, EXEC)) as Array<Record<string, unknown>>
+  assert.deepEqual(second.map((row) => row['id']), ['migrated'], 'second read stays stable (idempotent migration)')
+})
