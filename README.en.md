@@ -25,6 +25,8 @@ Adding entries needs no hand-written config either: ask the main agent to do it,
 
 > Distinction from the official capabilities: the official `subagent` tool dispatches ad-hoc tasks (you describe the task each time), and the official `list_agents` lists *running* child instances; this plugin maintains a **persistent named roster** (edited visually in a settings page, hot-reloaded). The model picks an entry with `list_subagents` and dispatches by id with `delegate`.
 
+> **Upgrading from 0.2.x?** Since 0.3 the roster is directory-backed (one YAML file per subagent). Your legacy config **migrates automatically**, and the old settings.yaml section can be cleared with one click — zero manual steps. See [MIGRATION.md](./MIGRATION.md) for the detailed guide and [CHANGELOG.md](./CHANGELOG.md) for all changes.
+
 ## Screenshots
 
 <p align="center">

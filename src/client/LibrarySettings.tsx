@@ -139,6 +139,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
     if (clean.provider === '') delete clean.provider
     if (clean.model === '') delete clean.model
     if (clean.subagentProvider === '') delete clean.subagentProvider
+    if (clean.reasoningEffort === '') delete clean.reasoningEffort
     if (clean.persona === '') delete clean.persona
     if (clean.description === '') delete clean.description
     if (clean.maxDepth === undefined) delete clean.maxDepth
@@ -280,6 +281,26 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
         </div>
       )}
 
+      {(view.legacyCount ?? 0) > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 10px', border: '1px solid var(--dsh-color-border, #3a3f4b)', borderRadius: '6px', fontSize: '12px' }}>
+          <span style={{ flex: 1 }}>
+            0.2→0.3 迁移：{view.legacyCount} 个旧条目已导出为名册文件并优先生效，settings.yaml 中的旧副本仍在（仅作回滚兜底）。确认名册正常后可一键清除。
+          </span>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              if (window.confirm('确认清除 settings.yaml 中已迁移的旧条目副本？（名册文件不受影响）')) {
+                void applyWrite({ op: 'clear-legacy', expectedHash: view?.hash }, '')
+              }
+            }}
+            style={buttonStyle}
+          >
+            清除旧条目
+          </button>
+        </div>
+      )}
+
       {ids.length === 0 && (
         <div style={{ fontSize: '13px', opacity: 0.8 }}>库为空。添加第一个条目开始使用。</div>
       )}
@@ -418,6 +439,16 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
             </div>
 
             <div style={rowStyle}>
+              <span style={labelStyle}>思考强度</span>
+              <input
+                value={entry.reasoningEffort ?? ''}
+                onChange={(event) => setEntries({ ...entries, [id]: { ...entry, reasoningEffort: event.target.value === '' ? undefined : event.target.value.trim() } })}
+                placeholder="适配器自有值，如 max / high / medium / low（留空随父会话默认）"
+                style={inputStyle}
+              />
+            </div>
+
+            <div style={rowStyle}>
               <span style={labelStyle}>角色提示词</span>
               <textarea
                 value={entry.persona ?? ''}
@@ -522,6 +553,15 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
               style={inputStyle}
             />
           </div>
+        </div>
+        <div style={rowStyle}>
+          <span style={labelStyle}>思考强度</span>
+          <input
+            value={newEntry.reasoningEffort ?? ''}
+            onChange={(event) => setNewEntry({ ...newEntry, reasoningEffort: event.target.value === '' ? undefined : event.target.value.trim() })}
+            placeholder="适配器自有值，如 max / high / medium / low（留空随父会话默认）"
+            style={inputStyle}
+          />
         </div>
         <div style={rowStyle}>
           <span style={labelStyle}>角色提示词</span>

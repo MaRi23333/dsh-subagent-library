@@ -53,6 +53,13 @@ export interface Entry {
   provider?: string
   /** Provider model id; omitted children use the caller's loop defaults. */
   model?: string
+  /** Adapter-owned reasoning-effort id for the child (e.g. `max`, `high`);
+   *  omitted children keep the parent/deployment default. Passed through the
+   *  official `agentOptions.reasoningEffort` override (AgentOptions): the
+   *  harness resolves it in `resolveChildAgentOptions` and automatically drops
+   *  an INHERITED effort when the child's route differs from the parent's, so
+   *  an unset field never leaks an effort across models. */
+  reasoningEffort?: string
   /** Subagent transport provider (e.g. `spawn`); defaults to the plugin-level `subagentProvider`. */
   subagentProvider?: string
   /** Per-request output cap for the child. */
@@ -72,6 +79,7 @@ export const EntrySchema: z<Entry> = z.object({
   provider: z.string(),
   model: z.string(),
   subagentProvider: z.string(),
+  reasoningEffort: z.string(),
   maxTokens: z.natural().max(Number.MAX_SAFE_INTEGER),
   persona: z.string(),
   toolFilter: z.object({
@@ -83,7 +91,7 @@ export const EntrySchema: z<Entry> = z.object({
 })
 
 const ENTRY_KEYS = new Set([
-  'description', 'provider', 'model', 'subagentProvider', 'maxTokens',
+  'description', 'provider', 'model', 'subagentProvider', 'reasoningEffort', 'maxTokens',
   'persona', 'toolFilter', 'maxDepth', 'backgroundMode',
 ])
 
@@ -215,7 +223,7 @@ function hashEntries(entries: Record<string, RosterEntry>): string {
 export function serializeEntry(entry: Entry, enabled = true): string {
   const record = entry as unknown as Record<string, unknown>
   const doc: Record<string, unknown> = {}
-  for (const key of ['description', 'provider', 'model', 'subagentProvider', 'maxTokens', 'persona', 'toolFilter', 'maxDepth', 'backgroundMode']) {
+  for (const key of ['description', 'provider', 'model', 'subagentProvider', 'reasoningEffort', 'maxTokens', 'persona', 'toolFilter', 'maxDepth', 'backgroundMode']) {
     const value = record[key]
     if (value === undefined) continue
     if (key === 'backgroundMode' && value === 'one-shot') continue

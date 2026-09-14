@@ -32,6 +32,8 @@ DeepSeek Harness 的具名子代理库插件：把常用角色（代码审查、
 
 > 与官方能力的区分：官方 `subagent` 工具是临时派活（每次现场描述任务），官方 `list_agents` 列的是正在运行的子代实例；本插件维护的是**持久化的具名角色名册**（设置页可视化编辑、热生效），模型用 `list_subagents` 选人、`delegate` 按 id 派活。
 
+> **从 0.2.x 升级？** 0.3 起名册目录化（一个子代理一个 YAML 文件），旧配置**自动迁移**、settings.yaml 旧段可一键清除，零手工步骤——详细过渡指南见 [MIGRATION.md](./MIGRATION.md)，完整变更见 [CHANGELOG.md](./CHANGELOG.md)。
+
 ## 界面
 
 <p align="center">

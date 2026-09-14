@@ -25,6 +25,7 @@ export interface StoredEntry {
   provider?: string
   model?: string
   subagentProvider?: string
+  reasoningEffort?: string
   maxTokens?: number
   persona?: string
   toolFilter?: { allow?: string[]; deny?: string[] }
@@ -51,11 +52,15 @@ export interface LibraryView {
   hash: string
   entries: Record<string, StoredEntry>
   diagnostics?: LibraryDiagnostic[]
+  /** Legacy settings copies currently shadowed by a roster file — the safe
+   *  one-click cleanup set for the 0.2→0.3 transition. */
+  legacyCount?: number
 }
 
 export type LibraryWrite =
   | { op: 'save'; entries: Record<string, StoredEntry>; expectedHash?: string }
   | { op: 'delete'; id: string; expectedHash?: string }
+  | { op: 'clear-legacy'; expectedHash?: string }
 
 export type LibraryWriteResult =
   | { ok: true; view: LibraryView }

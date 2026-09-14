@@ -32,7 +32,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
 import { assertSubagentMaxDepth, settleRun } from '@deepseek-ai/dsh-subagent'
 import type { SubagentResult, SubagentRun, SubagentStartRequest } from '@deepseek-ai/dsh-subagent'
@@ -378,6 +378,19 @@ export function apply(ctx: Context, config: Config) {
       ...(row.source === 'legacy' ? { source: 'legacy' } : {}),
     }]))
 
+  /** Legacy settings entries currently shadowed by a roster file — the safe
+   *  one-click cleanup set for the 0.2→0.3 transition (a legacy row WITHOUT a
+   *  file is still serving and must survive). */
+  const legacyShadowedIds = (view: RosterView): string[] => {
+    const svc = settingsService
+    const ns = settingsNs
+    if (svc === undefined || ns === undefined) return []
+    const descriptor = svc.describe().find((row) => row.ns === ns)
+    const raw = (descriptor?.user as { entries?: unknown } | undefined)?.entries
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return []
+    return Object.keys(raw).filter((id) => ENTRY_ID.test(id) && view.entries[id]?.source === 'file')
+  }
+
   const wireView = async (): Promise<Record<string, unknown>> => {
     const { view } = await loadLibrary()
     return {
@@ -387,6 +400,7 @@ export function apply(ctx: Context, config: Config) {
       hash: view.hash,
       entries: wireEntries(view),
       diagnostics: view.diagnostics,
+      legacyCount: legacyShadowedIds(view).length,
     }
   }
 
@@ -457,7 +471,13 @@ export function apply(ctx: Context, config: Config) {
             })
             return
           }
-          if (body['op'] === 'delete') {
+          if (body['op'] === 'clear-legacy') {
+            // One-click cleanup for the 0.2→0.3 transition: unset ONLY the
+            // legacy copies currently shadowed by a roster file. Legacy rows
+            // without a file (failed export, hand-deleted file) keep serving
+            // and are deliberately left alone.
+            await unsetLegacy(legacyShadowedIds(current))
+          } else if (body['op'] === 'delete') {
             const id = typeof body['id'] === 'string' ? body['id'] : ''
             if (!ENTRY_ID.test(id)) {
               sendJson(res, 400, { ok: false, error: 'invalid-id' })
@@ -742,12 +762,20 @@ export function apply(ctx: Context, config: Config) {
         }
       }
 
-      // entry.provider/model are the LLM route + model (agentOptions), NOT the
-      // subagent transport; the transport is `subagentProvider` (default spawn).
-      const agentOptions = entry.provider !== undefined || entry.model !== undefined || entry.maxTokens !== undefined
+      // entry.provider/model/reasoningEffort are the LLM route + model +
+      // thinking-effort overrides (agentOptions), NOT the subagent transport;
+      // the transport is `subagentProvider` (default spawn). The official
+      // resolver merges agentOptions over the parent's options and drops an
+      // inherited reasoningEffort when the route changes, so an entry that
+      // sets neither model nor reasoningEffort keeps the caller's behavior.
+      const agentOptions = entry.provider !== undefined || entry.model !== undefined
+        || entry.maxTokens !== undefined || entry.reasoningEffort !== undefined
         ? {
             ...(entry.provider !== undefined ? { provider: entry.provider } : {}),
             ...(entry.model !== undefined ? { model: entry.model } : {}),
+            ...(entry.reasoningEffort !== undefined
+              ? { reasoningEffort: entry.reasoningEffort as ReasoningEffortId }
+              : {}),
             ...(entry.maxTokens !== undefined ? { maxTokens: entry.maxTokens } : {}),
           }
         : undefined

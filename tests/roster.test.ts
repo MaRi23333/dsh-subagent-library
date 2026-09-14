@@ -27,6 +27,7 @@ const ENTRY: Entry = {
   description: 'fake role',
   provider: 'fake-provider',
   model: 'fake-model',
+  reasoningEffort: 'max',
   persona: '你是假角色',
   backgroundMode: 'continuable',
 }
@@ -73,6 +74,7 @@ test('parseEntryDocument validates, rejects unknown keys, and applies schema def
 test('serializeEntry omits defaults and round-trips through YAML', () => {
   const text = serializeEntry(ENTRY, true)
   assert.match(text, /backgroundMode: continuable/)
+  assert.match(text, /reasoningEffort: max/)
   assert.doesNotMatch(text, /enabled/)
   const back = parseEntryDocument(parseYaml(text))
   assert.equal(back.enabled, true)
@@ -212,6 +214,7 @@ test('migrateLegacyEntries is per-entry idempotent and never overwrites existing
     description: ENTRY.description,
     provider: ENTRY.provider,
     model: ENTRY.model,
+    reasoningEffort: ENTRY.reasoningEffort,
     persona: ENTRY.persona,
     backgroundMode: 'continuable',
   })

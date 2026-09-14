@@ -261,3 +261,38 @@ test('legacy base entries migrate into roster files on first read and keep servi
   const second = (await tool(host, 'list_subagents').execute({}, EXEC)) as Array<Record<string, unknown>>
   assert.deepEqual(second.map((row) => row['id']), ['migrated'], 'second read stays stable (idempotent migration)')
 })
+
+test('delegate passes reasoningEffort through agentOptions (official override)', async () => {
+  // resolveChildAgentOptions merges agentOptions over the parent's options and
+  // drops an inherited effort when the route changes — an explicit entry-level
+  // reasoningEffort rides the same official override.
+  const host = makeHost({
+    subagentProviders: ['spawn'],
+    baseEntries: {
+      thinker: {
+        description: 'fake',
+        provider: 'qwen',
+        model: 'qwen3.8-flash',
+        reasoningEffort: 'high',
+        maxTokens: 4096,
+      },
+    },
+  })
+  await tool(host, 'delegate').execute({ library_id: 'thinker', prompt: 'x' }, EXEC)
+  assert.equal(host.subagentStarts.length, 1)
+  assert.deepEqual(host.subagentStarts[0]?.request['agentOptions'], {
+    provider: 'qwen',
+    model: 'qwen3.8-flash',
+    reasoningEffort: 'high',
+    maxTokens: 4096,
+  })
+})
+
+test('delegate omits agentOptions entirely when an entry sets no route overrides', async () => {
+  const host = makeHost({
+    subagentProviders: ['spawn'],
+    baseEntries: { plain: { description: 'fake' } },
+  })
+  await tool(host, 'delegate').execute({ library_id: 'plain', prompt: 'x' }, EXEC)
+  assert.equal(Object.hasOwn(host.subagentStarts[0]?.request ?? {}, 'agentOptions'), false)
+})

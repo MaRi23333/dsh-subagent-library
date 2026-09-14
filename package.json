@@ -39,6 +39,8 @@
     "cordis.patch.yml",
     "README.md",
     "README.en.md",
+    "CHANGELOG.md",
+    "MIGRATION.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
     "assets/readme"

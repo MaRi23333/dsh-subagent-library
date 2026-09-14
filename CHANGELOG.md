@@ -1,0 +1,59 @@
+# 更新日志 / Changelog
+
+本文件记录 dsh-subagent-library 的面向用户的重要变化。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
+
+This file documents user-facing changes. Format loosely follows [Keep a Changelog]; versions follow [SemVer].
+
+## [Unreleased]
+
+（暂无 / nothing yet）
+
+## [0.3.0] — 2026-09-10
+
+### 变更 / Changed（重要：存储位置变化）
+
+- **名册存储目录化**：具名子代理从 `settings.yaml` 的 `subagent-library.entries` 迁移为 **一个子代理一个 YAML 文件**，默认目录 `~/.dsh/subagents/`（可用 `subagent-library.entriesDir` 自定义，支持 `~` 与相对路径）。
+  - **The roster now lives as one YAML file per named subagent** (default `~/.dsh/subagents/`), replacing the inline `entries` map in settings.yaml.
+- **旧条目自动迁移**：升级后首次使用名册时，settings 里的旧 `entries` 会被**逐条**导出为 `<id>.yaml`（已存在同名文件绝不覆盖；重复重启幂等）。settings 中的旧副本**保留**作回滚兜底，文件优先生效；0.3.x 内旧配置仍可读，**0.4 起停止读取**。
+  - On first use the legacy `entries` are exported entry-by-entry (never overwriting hand-written files); the legacy copies are kept as a rollback fallback and win nothing — files take precedence. Legacy reading is removed in 0.4.
+- **一键清除旧条目**：设置页「子代理库」卡片新增迁移横幅与「清除旧条目」按钮（只清除已被文件覆盖的旧副本，不碰名册文件）；也可手动删除 settings 中的旧 `entries` 段。详见 [MIGRATION.md](./MIGRATION.md)。
+  - The settings page gains a migration banner with a one-click "clear legacy copies" action. See [MIGRATION.md](./MIGRATION.md).
+
+### 新增 / Added
+
+- **`reasoningEffort` 条目字段**：为单个具名子代理指定思考强度（adapter 自有值，如 `max` / `high` / `medium` / `low`；留空随父会话默认）。走官方 `agentOptions.reasoningEffort` 覆盖通道；子代理换了模型路由时，官方会自动丢弃继承来的思考强度，因此未显式设置不会跨模型泄漏。
+  - New per-entry `reasoningEffort` field (adapter-owned id, e.g. `max`), passed through the official `agentOptions.reasoningEffort` override; inherited efforts are auto-dropped by the harness when the child's route differs.
+- **`enabled` 条目字段**：文件内写 `enabled: false` 停用条目——目录与设置页仍可见，`delegate` 明确拒绝；设置页提供启用开关。
+  - New `enabled` flag to disable an entry without deleting its file.
+- **坏文件不炸名册**：解析/校验失败、`.yaml`/`.yml` 同 id 冲突、大写文件名等一律跳过并以 diagnostics 呈现在 `list_subagents`、`/subagent` 与设置页。
+  - Broken roster files are skipped and surfaced as diagnostics instead of breaking the roster.
+- 设置页：迁移横幅、legacy 徽标、diagnostics 面板、冲突提示自动合并最新视图（409 带回新视图）。
+  - Settings page: migration banner, legacy badge, diagnostics panel, conflict auto-merge.
+
+### 内部 / Internal
+
+- 每次操作实时读目录（无缓存、无 watcher）；单条目写入原子化（临时文件 + rename 带重试）；id 规则加长度 ≤64 与 Windows 保留设备名黑名单；BOM 兼容；未知字段大声拒绝。
+  - Fresh directory reads per operation; atomic per-file writes with rename retries; id length cap + Windows reserved-name blacklist; BOM tolerance; loud unknown-field rejection.
+
+## [0.2.8] — 2026-09-09
+
+- 设置页导航图标装饰（decorateSettingsNavIcon）。
+
+## [0.2.7] — 2026-09-09
+
+- 修复：`toolFilter` 改为按**调用方会话的可限制集合**解析（此前按可见性，`subagent` 等 scope-local 工具会让委派整单失败）；忽略的名字带原因标注；`allow` 全不可应用时拒绝委派；`list_subagents` 目录同步展示生效后的过滤摘要。
+
+## [0.2.6] — 2026-09-06
+
+- DSH 0.1.2-rc.1 兼容性验证与声明（devDependencies 仍锁 rc.6）。
+
+## [0.2.5] — 2026-09-05
+
+- 修复设置页保存 400（移除保存期工具名预检，委派期 `tools.restrict` 为准）；新条目卡补齐缺失字段。
+
+[Unreleased]: https://github.com/MaRi23333/dsh-subagent-library/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/MaRi23333/dsh-subagent-library/compare/v0.2.8...v0.3.0
+[0.2.8]: https://github.com/MaRi23333/dsh-subagent-library/compare/v0.2.7...v0.2.8
+[0.2.7]: https://github.com/MaRi23333/dsh-subagent-library/compare/v0.2.6...v0.2.7
+[0.2.6]: https://github.com/MaRi23333/dsh-subagent-library/compare/v0.2.5...v0.2.6
+[0.2.5]: https://github.com/MaRi23333/dsh-subagent-library/compare/v0.2.4...v0.2.5

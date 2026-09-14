@@ -273,6 +273,23 @@ test('readonly settings no longer block roster writes; legacy-only deletes just 
   assert.ok(host.fs.files()['/roster/new-entry.yaml'] !== undefined)
 })
 
+test('POST clear-legacy unsets the migrated legacy copies and reports the count', async () => {
+  // Legacy entries live in the settings user layer (the settings.yaml
+  // document); the first read migrates them into roster files, so every
+  // legacy copy is "shadowed" and safe to clear.
+  const host = hostWith({ user: { entries: { alpha: { ...ENTRY }, beta: { description: 'beta role' } } } })
+  const before = await dispatch(host.web, API_PATH)
+  assert.equal((jsonBody(before)['legacyCount'] as number | undefined) ?? 0, 2, 'both legacy copies are shadowed by files')
+  assert.ok(host.fs.files()['/roster/alpha.yaml'] !== undefined, 'migration exported alpha before clearing')
+
+  const res = await postJson(host.web, { op: 'clear-legacy' })
+  assert.equal(res.status, 200)
+  const body = jsonBody(res)
+  assert.equal(body['legacyCount'], 0)
+  assert.deepEqual(Object.keys(body['entries'] as Record<string, unknown>).sort(), ['alpha', 'beta'], 'the roster files keep serving')
+  assert.deepEqual(host.settings.userSection()?.['entries'], {}, 'settings.yaml entries are now empty')
+})
+
 test('POST rejects an unknown op (400 unknown-op)', async () => {
   const host = hostWith()
   const res = await postJson(host.web, { op: 'explode' })
