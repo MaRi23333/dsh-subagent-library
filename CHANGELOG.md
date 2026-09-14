@@ -6,7 +6,7 @@ This file documents user-facing changes. Format loosely follows [Keep a Changelo
 
 ## [Unreleased]
 
-- 设置页 UI 重排：对齐个性化指令编辑器的视觉风格（主题中性 rgba 配色、8px 圆角卡片、蓝色主操作/红色危险按钮、tinted 横幅、chip 徽标），整卡加宽至 860px；**角色提示词编辑区加高至 220px（rows 10）**，长 persona 无需拖动即可读到大部。
+- 设置页 UI 重排：对齐个性化指令编辑器的视觉风格（主题中性 rgba 配色、8px 圆角卡片、蓝色主操作/红色危险按钮、tinted 横幅、chip 徽标），整卡加宽至 860px；**角色提示词编辑区按内容自适应高度**（110–440px 夹紧，短文本紧凑、长文本展开），描述/persona 等正文字段换回界面字体并加大字号，长文本可读性优先。
 - 名册目录新增 **`_backups/` 备份约定**：插件不做自动备份，按惯例 agent/人在改条目前把原文件复制进 `_backups/`；`_` 前缀的文件/目录（`_backups/`、`_draft.yaml`…）一律视为非名册内容，**静默忽略**（不再产生诊断噪音）。
 
 ## [0.3.0] — 2026-09-10

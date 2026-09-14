@@ -20,6 +20,22 @@ export type LibrarySettingsProps =
   PropsRuntime<'settings.section'>
   & InjectFace<LibrarySettingsInjected>
 
+/** Content-adaptive textarea: grows with its text (clamped) so long personas
+ *  are readable without dragging while short ones stay compact. Re-measures
+ *  after every render (value changes re-render) and on input. */
+function AutoTextarea(props: Omit<React.TextareaHTMLAttributes<HTMLTextAreaElement>, 'style'> & { style?: React.CSSProperties }): React.ReactElement {
+  const { style, ...rest } = props
+  const ref = useRef<HTMLTextAreaElement | null>(null)
+  const resize = (): void => {
+    const el = ref.current
+    if (el === null) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(Math.max(el.scrollHeight, 110), 440)}px`
+  }
+  useEffect(() => { resize() })
+  return <textarea {...rest} ref={ref} onInput={resize} style={{ ...style, overflow: 'auto' }} />
+}
+
 export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement {
   const { readView, writeView, subscribeRefresh } = props
 
@@ -213,11 +229,11 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
    *  intrinsic width instead of overflowing the settings card (form controls
    *  otherwise keep their default width as a flex minimum). */
   const colStyle = { display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 } as const
-  const labelStyle = { fontSize: 12.5, opacity: 0.75, minWidth: '72px' } as const
+  const labelStyle = { fontSize: 13, opacity: 0.75, minWidth: '72px' } as const
   const inputStyle = {
     flex: 1,
     minWidth: 0,
-    fontSize: 12.5,
+    fontSize: 13,
     fontFamily: 'Consolas, Menlo, monospace',
     lineHeight: 1.5,
     padding: '5px 8px',
@@ -226,11 +242,18 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
     background: 'transparent',
     color: 'inherit',
   } as const
-  /** Persona texts are long — a tall resizable editor so most of the body is
-   *  readable without dragging the handle (the top user complaint). */
-  const textareaStyle = {
+  /** Prose fields (description, persona) use the UI font at a readable size —
+   *  long Chinese text in small monospace was the readability complaint. */
+  const proseStyle = {
     ...inputStyle,
-    minHeight: 220,
+    fontFamily: 'inherit',
+    fontSize: 13.5,
+    lineHeight: 1.6,
+  } as const
+  /** Persona editor: adaptive height comes from AutoTextarea (110–440px by
+   *  content); the style only carries font/border. */
+  const textareaStyle = {
+    ...proseStyle,
     resize: 'vertical',
     whiteSpace: 'pre-wrap',
     overflowWrap: 'anywhere',
@@ -386,7 +409,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
                 value={entry.description ?? ''}
                 onChange={(event) => setEntries({ ...entries, [id]: { ...entry, description: event.target.value } })}
                 placeholder="角色描述（模型可见）"
-                style={inputStyle}
+                style={proseStyle}
               />
             </div>
 
@@ -496,11 +519,10 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
 
             <div style={rowStyle}>
               <span style={labelStyle}>角色提示词</span>
-              <textarea
+              <AutoTextarea
                 value={entry.persona ?? ''}
                 onChange={(event) => setEntries({ ...entries, [id]: { ...entry, persona: event.target.value } })}
                 placeholder="子代理的系统提示词（可选）"
-                rows={10}
                 style={textareaStyle}
               />
             </div>
@@ -526,7 +548,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
             value={newEntry.description ?? ''}
             onChange={(event) => setNewEntry({ ...newEntry, description: event.target.value })}
             placeholder="角色描述（模型可见）"
-            style={inputStyle}
+            style={proseStyle}
           />
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
@@ -611,11 +633,10 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
         </div>
         <div style={rowStyle}>
           <span style={labelStyle}>角色提示词</span>
-          <textarea
+          <AutoTextarea
             value={newEntry.persona ?? ''}
             onChange={(event) => setNewEntry({ ...newEntry, persona: event.target.value })}
             placeholder="子代理的系统提示词（可选）"
-            rows={10}
             style={textareaStyle}
           />
         </div>
