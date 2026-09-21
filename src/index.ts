@@ -473,13 +473,6 @@ export function apply(ctx: Context, config: Config) {
         const expectedHash = typeof rawHash === 'string' ? rawHash : undefined
         try {
           const { view: current } = await loadLibrary()
-          /** Append a loud warning when a legacy cleanup was skipped because
-           *  the settings service is read-only — otherwise a deleted entry
-           *  would silently resurrect from its legacy copy (k3 #4). */
-          const withLegacyWarning = (view: RosterView, skipped: boolean): RosterView => {
-            if (!skipped) return view
-            return { ...view, diagnostics: [{ severity: 'warning', message: '设置服务只读：settings 中的旧副本未能同步移除，被删条目可能以旧副本复活' }, ...view.diagnostics] }
-          }
           // UI write guard: hash of the rows the editor last saw. A stale hash
           // gets a 409 whose `view` field carries the fresh roster so the
           // editor can merge and retry instead of just failing (v0.3.0 design
@@ -525,6 +518,7 @@ export function apply(ctx: Context, config: Config) {
             // unset is a no-op when the key is absent.
             const unset = await unsetLegacy([id])
             sendJson(res, 200, await wireView(unset === 'skipped-readonly'))
+            return
           } else if (body['op'] === 'save') {
             const entries = body['entries']
             if (typeof entries !== 'object' || entries === null || Array.isArray(entries)) {
@@ -577,10 +571,12 @@ export function apply(ctx: Context, config: Config) {
             }
             const unset = await unsetLegacy(deletedIds)
             sendJson(res, 200, await wireView(unset === 'skipped-readonly'))
+            return
           } else {
             sendJson(res, 400, { ok: false, error: 'unknown-op' })
             return
           }
+          // Only clear-legacy reaches this tail without having answered.
           sendJson(res, 200, await wireView())
         } catch (error) {
           // Per-file writes are individually atomic; a mid-snapshot failure

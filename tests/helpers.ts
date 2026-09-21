@@ -320,11 +320,16 @@ export interface MockRes {
 }
 
 export function makeRes(): MockRes {
+  let headersSent = false
   const record: MockRes = {
     status: 200,
     headers: {},
     body: '',
     writeHead(status, headers) {
+      // Mirror the real http.ServerResponse: a handler that answers twice
+      // must fail loudly instead of silently overwriting the first response.
+      if (headersSent) throw new Error('ERR_HTTP_HEADERS_SENT: sendJson called twice on one response')
+      headersSent = true
       record.status = status
       record.headers = headers
     },

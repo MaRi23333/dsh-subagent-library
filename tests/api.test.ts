@@ -276,6 +276,19 @@ test('readonly settings no longer block roster writes; legacy-only deletes just 
   assert.ok(host.fs.files()['/roster/new-entry.yaml'] !== undefined)
 })
 
+test('delete answers exactly once and the readonly legacy warning survives to the client', async () => {
+  // The delete branch used to fall through to the shared tail send, so the
+  // warning-carrying response was immediately overwritten by a second bare
+  // send (the real host would throw ERR_HTTP_HEADERS_SENT). The MockRes
+  // double-send guard now turns any regression back into a loud failure.
+  const host = hostWith({ writable: false, baseEntries: { doomed: { ...ENTRY } } })
+  const res = await postJson(host.web, { op: 'delete', id: 'doomed' })
+  assert.equal(res.status, 200)
+  const body = jsonBody(res)
+  const diagnostics = (body['diagnostics'] ?? []) as Array<{ severity: string, message: string }>
+  assert.ok(diagnostics.some((d) => d.severity === 'warning'), 'the read-only legacy warning must not be overwritten')
+})
+
 test('POST clear-legacy unsets the migrated legacy copies and reports the count', async () => {
   // Legacy entries live in the settings user layer (the settings.yaml
   // document); the first read migrates them into roster files, so every
