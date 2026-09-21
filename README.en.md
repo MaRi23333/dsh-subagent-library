@@ -91,6 +91,7 @@ Entry fields:
 | `description` | yes | Role description, shown to the model by `list_subagents` |
 | `provider` | no | **LLM route** (e.g. `deepseek-official`, `kimi-coding`); defaults to the caller's default |
 | `model` | no | LLM model id; defaults to the caller's session model |
+| `reasoningEffort` | no | Thinking effort: adapter-owned id (e.g. `max` / `high` / `medium` / `low`); empty follows the parent session default. Rides the official `agentOptions.reasoningEffort` override; when the child model route differs, the harness auto-drops the inherited effort, so unset values never leak across models. Only id-shaped values (alphanumerics and `._-`) are accepted; anything else is rejected on save |
 | `subagentProvider` | no | **Subagent transport** (a `ctx.subagents` provider such as `spawn`); defaults to the plugin-level default `spawn` |
 | `maxTokens` | no | Subagent output cap |
 | `persona` | no | Subagent system prompt. Personas go through strict `{{…}}` template interpolation (same semantics as deployment personas) — an unregistered variable (e.g. `{{user}}`) fails child activation |
@@ -132,6 +133,8 @@ npx @deepseek-ai/dsh plugin --profile web add /absolute/path/to/dsh-subagent-lib
 > The repo commits `lib/` build artifacts, so git installs need no local build; after
 > changing sources run `pnpm run build` and restart.
 > Roster edits (files under `~/.dsh/subagents/`) are **hot-reloaded** — no restart.
+>
+> **Switching channels** — if you previously installed from GitHub or a local checkout and want npm-release upgrades, re-add with `npx @deepseek-ai/dsh plugin --profile web add dsh-subagent-library@latest` to force the latest npm version.
 
 ## Settings page
 

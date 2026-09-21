@@ -97,6 +97,7 @@ backgroundMode: continuable
 | `description` | 是 | 角色描述，`list_subagents` 展示给模型 |
 | `provider` | 否 | **LLM 路由**（如 `deepseek-official`、`kimi-coding`）；缺省用调用方默认 |
 | `model` | 否 | LLM 模型 id；缺省用调用方的会话默认模型 |
+| `reasoningEffort` | 否 | 思考强度：适配器自有值（如 `max` / `high` / `medium` / `low`），留空随父会话默认。走官方 `agentOptions.reasoningEffort` 覆盖通道；子代理换了模型路由时官方会自动丢弃继承值，未显式设置不会跨模型泄漏。只接受 id 形态（字母数字与 `._-`），其他值保存时被拒绝 |
 | `subagentProvider` | 否 | **子代理传输层**（`spawn` 等 `ctx.subagents` provider）；默认取插件级默认 `spawn` |
 | `maxTokens` | 否 | 子代理输出上限 |
 | `persona` | 否 | 子代理角色提示词。注意 persona 走严格的 `{{…}}` 模板插值（与部署 persona 同语义）——出现未注册的变量（如 `{{user}}`）会让子代理激活失败 |
@@ -107,7 +108,7 @@ backgroundMode: continuable
 
 **坏文件不炸名册**：解析/校验失败的文件被跳过，错误进入 `list_subagents` 输出、`/subagent` 命令与设置页的 diagnostics；`.yaml`/`.yml` 同名冲突、大写文件名等也会以诊断形式报出。
 
-**从 0.2.x 迁移**：首次使用名册时，settings.yaml 里已有的 `entries` 会**逐条**导出为 `<id>.yaml`（已存在同名文件的条目跳过，绝不覆盖手写文件）；settings 里的旧条目保留作回滚副本（ downgrade 插件时仍可用），文件优先生效。确认无误后可自行删除 settings 中的旧 `entries` 段（0.4 将停止读取）。
+**从 0.2.x 迁移**：首次使用名册时，settings.yaml 里已有的 `entries` 会**逐条**导出为 `<id>.yaml`（已存在同名文件的条目跳过，绝不覆盖手写文件）；settings 里的旧条目保留作回滚副本（降级插件时仍可用），文件优先生效。确认无误后可自行删除 settings 中的旧 `entries` 段（0.4 将停止读取）。
 
 > 注意区分两个 provider 概念：`provider` 指 LLM 路由（`agentOptions.provider`），
 > `subagentProvider` 指子代理传输层（`ctx.subagents` 注册名，如 `spawn`/`fork`/`acp`）。
@@ -137,6 +138,8 @@ npx @deepseek-ai/dsh plugin --profile web add /absolute/path/to/dsh-subagent-lib
 
 > 仓库已提交 `lib/` 构建产物，git 安装无需本地构建；改源码后运行 `pnpm run build` 再重启即可。
 > 名册（`~/.dsh/subagents/` 下的条目文件）**热生效**，无需重启。
+>
+> **渠道切换**：之前从 GitHub / 本地目录安装、现在想跟随 npm 发布升级时，用 `npx @deepseek-ai/dsh plugin --profile web add dsh-subagent-library@latest` 显式取 npm 最新版。
 
 ## 设置页
 

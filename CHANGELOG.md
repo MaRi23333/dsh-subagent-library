@@ -4,13 +4,7 @@
 
 This file documents user-facing changes. Format loosely follows [Keep a Changelog]; versions follow [SemVer].
 
-## [Unreleased]
-
-- **双审加固（K3 实现复审 + GLM 红队）**：设置页保存**跳过内容未变的条目**——不再把未触碰的手写 YAML 文件重写为生成格式（手写注释得以保留）；名册文件损坏且存在同名 legacy 副本时，升级为 **error 级诊断**并明确提示「delegate 使用的是旧配置」（不再静默回退）；409 冲突**保留用户未保存的草稿**（只切换到最新基线，再次保存才会覆盖）；迁移失败（整体或单条）**自动重试**而非进程内永久搁浅；`reasoningEffort` 保存时校验为 effort id 形态（字母数字与 `._-`）；设置页只读时「清除旧条目」响亮 403 而非假成功；客户端补齐 wire 契约测试（parseView 此前丢失 legacyCount 导致迁移横幅不渲染的 bug 即在此层）。
-- 设置页 UI 重排：对齐个性化指令编辑器的视觉风格（主题中性 rgba 配色、8px 圆角卡片、蓝色主操作/红色危险按钮、tinted 横幅、chip 徽标），整卡加宽至 860px；**角色提示词编辑区按内容自适应高度**（110–440px 夹紧，短文本紧凑、长文本展开），描述/persona 等正文字段换回界面字体并加大字号，长文本可读性优先；描述字段为单行 textarea 可拖展；后台模式挪至思考强度行，固定宽度控件不再被挤压。
-- 名册目录新增 **`_backups/` 备份约定**：插件不做自动备份，按惯例 agent/人在改条目前把原文件复制进 `_backups/`；`_` 前缀的文件/目录（`_backups/`、`_draft.yaml`…）一律视为非名册内容，**静默忽略**（不再产生诊断噪音）。
-
-## [0.3.0] — 2026-09-10
+## [0.3.0] — 2026-09-10（发布候选，未发布 / release candidate, unreleased）
 
 ### 变更 / Changed（重要：存储位置变化）
 
@@ -20,6 +14,8 @@ This file documents user-facing changes. Format loosely follows [Keep a Changelo
   - On first use the legacy `entries` are exported entry-by-entry (never overwriting hand-written files); the legacy copies are kept as a rollback fallback and win nothing — files take precedence. Legacy reading is removed in 0.4.
 - **一键清除旧条目**：设置页「子代理库」卡片新增迁移横幅与「清除旧条目」按钮（只清除已被文件覆盖的旧副本，不碰名册文件）；也可手动删除 settings 中的旧 `entries` 段。详见 [MIGRATION.md](./MIGRATION.md)。
   - The settings page gains a migration banner with a one-click "clear legacy copies" action. See [MIGRATION.md](./MIGRATION.md).
+- 设置页 UI 重排：对齐个性化指令编辑器的视觉风格（主题中性 rgba 配色、8px 圆角卡片、蓝色主操作/红色危险按钮、tinted 横幅、chip 徽标），整卡加宽至 860px；**角色提示词编辑区按内容自适应高度**（110–440px 夹紧，短文本紧凑、长文本展开），描述/persona 等正文字段换回界面字体并加大字号，长文本可读性优先；描述字段为单行 textarea 可拖展；后台模式挪至思考强度行，固定宽度控件不再被挤压。
+  - Settings-page restyle: aligned with the personal-instruction editor (theme-neutral rgba palette, 8px rounded cards, blue primary / red danger buttons, tinted banners, chip badges), card widened to 860px; the persona textarea auto-sizes to its content (clamped 110-440px); description/persona body text is back to the UI face at a larger size; the description field is a one-line textarea you can drag taller; background mode moved next to reasoning effort so fixed-width controls stop getting squeezed.
 
 ### 新增 / Added
 
@@ -29,8 +25,15 @@ This file documents user-facing changes. Format loosely follows [Keep a Changelo
   - New `enabled` flag to disable an entry without deleting its file.
 - **坏文件不炸名册**：解析/校验失败、`.yaml`/`.yml` 同 id 冲突、大写文件名等一律跳过并以 diagnostics 呈现在 `list_subagents`、`/subagent` 与设置页。
   - Broken roster files are skipped and surfaced as diagnostics instead of breaking the roster.
-- 设置页：迁移横幅、legacy 徽标、diagnostics 面板、冲突提示自动合并最新视图（409 带回新视图）。
-  - Settings page: migration banner, legacy badge, diagnostics panel, conflict auto-merge.
+- 设置页：迁移横幅、legacy 徽标、diagnostics 面板；409 冲突保留未保存草稿，仅切换到最新基线（响应带回新视图），再次保存即为覆盖。
+  - Settings page: migration banner, legacy badge, diagnostics panel; a 409 conflict keeps your unsaved draft and only switches to the latest baseline (the response carries the fresh view) — saving again overwrites.
+- 名册目录新增 **`_backups/` 备份约定**：插件不做自动备份，按惯例 agent/人在改条目前把原文件复制进 `_backups/`；`_` 前缀的文件/目录（`_backups/`、`_draft.yaml`…）一律视为非名册内容，**静默忽略**（不再产生诊断噪音）。
+  - Roster-directory `_backups/` convention: the plugin never auto-backs up — by convention, agents (or humans) copy the original file into `_backups/` before editing; anything `_`-prefixed (files or directories) is treated as non-roster content and silently ignored (no more diagnostic noise).
+
+### 修复 / Fixed
+
+- **双审加固（K3 实现复审 + GLM 红队）**：设置页保存**跳过内容未变的条目**——不再把未触碰的手写 YAML 文件重写为生成格式（手写注释得以保留）；名册文件损坏且存在同名 legacy 副本时，升级为 **error 级诊断**并明确提示「delegate 使用的是旧配置」（不再静默回退）；409 冲突**保留用户未保存的草稿**（只切换到最新基线，再次保存才会覆盖）；迁移失败（整体或单条）**自动重试**而非进程内永久搁浅；`reasoningEffort` 保存时校验为 effort id 形态（字母数字与 `._-`）；设置页只读时「清除旧条目」响亮 403 而非假成功；客户端补齐 wire 契约测试（parseView 此前丢失 legacyCount 导致迁移横幅不渲染的 bug 即在此层）。
+  - Dual-review hardening (K3 implementation review + GLM red team): settings-page saves **skip unchanged entries** (untouched hand-written YAML files are no longer rewritten into generated format, preserving comments); a broken roster file with a same-id legacy copy now surfaces an **error-level** diagnostic saying delegation is using the old config (no more silent fallback); a 409 conflict **keeps the unsaved draft** (only the baseline switches — saving again overwrites); failed migration (whole-batch or per-entry) **retries automatically** instead of latching for the process lifetime; `reasoningEffort` is validated as an effort id on save (alphanumerics and `._-`); the read-only settings page refuses "clear legacy" loudly with 403 instead of faking success; client wire-contract tests added (parseView previously dropped legacyCount, which was exactly where the migration banner failed to render).
 
 ### 内部 / Internal
 

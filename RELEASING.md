@@ -20,18 +20,18 @@ pnpm run check:pack
 - Create an **annotated** tag whose name is exactly `v${version}`:
 
   ```sh
-  git tag -a v0.2.3 -m "v0.2.3"
+  git tag -a vX.Y.Z -m "vX.Y.Z"
   git push origin main
-  git push origin v0.2.3
+  git push origin vX.Y.Z
   ```
 
-- Do **not** use a lightweight tag (`git tag v0.2.3`) — the workflow rejects it.
+- Do **not** use a lightweight tag (`git tag vX.Y.Z`) — the workflow rejects it.
 - The tag must point at the commit the release is built from, and the tag name must
   equal `v${package.json version}`; the workflow verifies both.
 
 ## 3. Create the GitHub Release
 
-Create the Release from the pushed annotated tag. On `published`, the workflow runs:
+Create the Release from the pushed annotated tag — after the CI workflow on the pushed commit has gone green. On `published`, the workflow runs:
 frozen install → typecheck → tests → build → committed-lib consistency → smoke →
 package whitelist → npm publish via OIDC (with SLSA provenance).
 

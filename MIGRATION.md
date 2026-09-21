@@ -59,7 +59,7 @@ subagent-library:
 2. 对每个条目：**如果名册目录里还没有同名 `<id>.yaml`，就导出一个**；
    - 已存在同名文件 → **跳过，绝不覆盖**（你手写的文件是安全的）；
    - id 非法（大写、超长、Windows 保留名）→ 跳过并在诊断里说明；
-3. **settings 里的旧段在迁移阶段原样保留**——它是你的回滚备份。注意：之后你在设置页**删除条目**或点**「清除旧条目」**时，对应的旧副本会被一并移除（名册文件不受影响）。
+3. **settings 里的旧段在迁移阶段原样保留**——它是你的回滚备份：自动迁移后旧副本仍保留，只有清理才会移除。注意区分两种操作：设置页**删除条目**会删除对应名册文件，并一并移除其旧副本；点**「清除旧条目」**只移除已被文件覆盖的旧副本，不动任何名册文件。
 
 迁移是逐条幂等的：重启多少次都只会导出缺的那几条，重复内容不会翻倍。
 
@@ -68,7 +68,7 @@ subagent-library:
 ### 第 1 步：升级 + 重启
 
 ```sh
-npx @deepseek-ai/dsh plugin --profile web add dsh-subagent-library
+npx @deepseek-ai/dsh plugin --profile web add dsh-subagent-library@latest
 ```
 
 然后重启 dsh web、刷新页面。
@@ -98,7 +98,7 @@ npx @deepseek-ai/dsh plugin --profile web add dsh-subagent-library
 npx @deepseek-ai/dsh plugin --profile web add dsh-subagent-library@0.2.8
 ```
 
-0.2.x 只读 settings.yaml——只要你不曾删除旧 `entries` 段，回滚后名册原样可用（0.3 之后手编的名册文件它看不见；所以**清理旧段之前请想清楚是否还要回滚**）。
+0.2.x 只读 settings.yaml——只要你不曾删除旧 `entries` 段，回滚后名册原样可用（0.3 之后手编的名册文件它看不见；所以**清理旧段之前请想清楚是否还要回滚**）。旧副本就是回滚的数据源：手动编辑或删除旧副本（含删除条目、一键清除）会让回滚回到删除/编辑当时的旧快照——0.3 期间在名册文件里做的修改不会跟着回去。
 
 ## FAQ
 
@@ -109,7 +109,7 @@ npx @deepseek-ai/dsh plugin --profile web add dsh-subagent-library@0.2.8
 `<id>.yaml`（或 `.yml`），id 必须全小写、匹配 `[a-z0-9][a-z0-9-]*`、长度 ≤ 64，且不能是 Windows 保留设备名（`con`、`nul`、`aux`…）。同一 id 的 `.yaml`/`.yml` 并存会报冲突诊断，只留一个。
 
 **Q：某个文件写坏了会怎样？**
-只有那一个条目失效：它被跳过，并在 `list_subagents`、`/subagent`、设置页 diagnostics 里给出原因，其余条目照常。改好文件即恢复。**特别注意**：如果同名条目在 settings 里还有旧副本（迁移完成后通常没有；手动清理过则没有），插件会用**旧副本兜底继续服务**，并在 diagnostics 里以 error 标明「delegate 使用的是旧配置」——看到这条请先修文件。
+只有那一个条目失效：它被跳过，并在 `list_subagents`、`/subagent`、设置页 diagnostics 里给出原因，其余条目照常。改好文件即恢复。**特别注意**：如果同名条目在 settings 里还有旧副本（自动迁移后旧副本仍保留；点「清除旧条目」或删除条目后才移除），插件会用**旧副本兜底继续服务**，并在 diagnostics 里以 error 标明「delegate 使用的是旧配置」——看到这条请先修文件。
 
 **Q：怎么临时停用一个子代理（不删文件）？**
 文件里加一行 `enabled: false`（或设置页关掉「启用」开关）。停用的条目仍可见，但 `delegate` 会拒绝并提示。注意：仍以 **legacy 兜底**方式服务的条目（见上一条）不支持停用——先在设置页保存一次让它晋升为文件，再停用。
@@ -138,9 +138,9 @@ npx @deepseek-ai/dsh plugin --profile web add dsh-subagent-library@0.2.8
 
 **What changed** — the roster moved from the inline `subagent-library.entries` map in `~/.dsh/settings.yaml` to **one YAML file per named subagent** under `~/.dsh/subagents/` (configurable via `subagent-library.entriesDir`). Files are hot-reloaded. Entry DATA is equivalent between the settings page and hand-edited files, but saving an entry from the settings page rewrites THAT entry's file as generated YAML (hand-written comments in that one file are lost); untouched files are left alone.
 
-**Automatic migration** — on the first roster use after upgrading, each legacy entry is exported to `<id>.yaml` **only if that file does not exist yet** (hand-written files are never overwritten; re-runs are idempotent). The legacy settings copies are **kept** as a rollback fallback; files take precedence. Legacy reading stays working throughout 0.3.x and is **removed in 0.4**.
+**Automatic migration** — on the first roster use after upgrading, each legacy entry is exported to `<id>.yaml` **only if that file does not exist yet** (hand-written files are never overwritten; re-runs are idempotent). The legacy settings copies are **kept** as a rollback fallback; files take precedence. Legacy reading stays working throughout 0.3.x and is **removed in 0.4**. Deleting an entry from the settings page removes its roster file **and** its legacy copy; the one-click cleanup only removes legacy copies that files already shadow and never touches roster files. Legacy copies persist after automatic migration until you clear them.
 
-**Rollback** — install the old version (`dsh-subagent-library@0.2.8`); as long as you have not deleted the legacy `entries` section, 0.2.x keeps working exactly as before.
+**Rollback** — install the old version (`dsh-subagent-library@0.2.8`); as long as you have not deleted the legacy `entries` section, 0.2.x keeps working exactly as before. The legacy copies are the rollback data source: editing or deleting them (including deleting entries or one-click cleanup) makes rollback return to the snapshot as of that moment — changes made in 0.3 roster files do not come back with the rollback.
 
 **New in 0.3** — per-entry `enabled` (disable without deleting) and `reasoningEffort` (adapter-owned thinking-effort id such as `max`, passed through the official `agentOptions` override); broken roster files are skipped with visible diagnostics instead of breaking the roster.
 
