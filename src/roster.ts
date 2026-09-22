@@ -242,7 +242,14 @@ export function serializeEntry(entry: Entry, enabled = true): string {
   return stringifyYaml(doc, { lineWidth: 0 })
 }
 
+/** The CANONICAL file name for an id — always `.yaml` (SUB-ROSTER-YML-001:
+ *  save converges every entry onto this spelling). */
 export const entryFileName = (id: string): string => `${id}.yaml`
+
+/** Every on-disk spelling that can serve one id. `loadRoster` READS both, so
+ *  writes and deletes must address both too — a `.yml`-only entry that
+ *  survives a delete would resurrect after every restart (SUB-ROSTER-YML-001). */
+export const entryFileNames = (id: string): string[] => [`${id}.yaml`, `${id}.yml`]
 
 /** Atomic single-file write: temp name in the roster dir, then rename with
  *  bounded retries (Windows AV/indexer transiently lock fresh files). */
@@ -263,7 +270,7 @@ export async function writeEntryFile(options: {
   for (let attempt = 0; ; attempt += 1) {
     try {
       await fsp.rename(temp, target)
-      return
+      break
     } catch (error) {
       if (attempt >= 2) {
         await fsp.unlink(temp).catch(() => { /* best effort cleanup */ })
@@ -272,14 +279,32 @@ export async function writeEntryFile(options: {
       await wait(50 * 3 ** attempt)
     }
   }
+  // Canonicalize on save: a surviving `.yml` sibling of the same id would
+  // create a duplicate-id conflict on the next read and resurrect the OLD
+  // entry when the new `.yaml` is deleted (SUB-ROSTER-YML-001). Removing it
+  // here is the documented convergence semantics: 保存统一收敛为 `.yaml`。
+  const ymlSibling = nodePath.join(options.dir, `${options.id}.yml`)
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await fsp.unlink(ymlSibling)
+      break
+    } catch (error) {
+      if (isEnoent(error)) break
+      if (attempt >= 2) throw error
+      await wait(50 * 3 ** attempt)
+    }
+  }
 }
 
-/** Remove one roster file; a missing file is already the desired state. */
+/** Remove every on-disk spelling that can serve one id (`.yaml` AND `.yml`);
+ *  a missing file is already the desired state (SUB-ROSTER-YML-001). */
 export async function deleteEntryFile(dir: string, id: string, fsp: FsPort = nodeFsPort): Promise<void> {
-  try {
-    await fsp.unlink(nodePath.join(dir, entryFileName(id)))
-  } catch (error) {
-    if (!isEnoent(error)) throw error
+  for (const name of entryFileNames(id)) {
+    try {
+      await fsp.unlink(nodePath.join(dir, name))
+    } catch (error) {
+      if (!isEnoent(error)) throw error
+    }
   }
 }
 

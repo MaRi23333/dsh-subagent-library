@@ -337,6 +337,57 @@ test('POST save skips byte-identical rows — untouched files keep hand-written 
   assert.match(String(host.fs.files()['/roster/touch.yaml']), /description: new text/)
 })
 
+// ── SUB-ROSTER-YML-001 regression: .yml entries must share the .yaml lifecycle ──
+
+test('.yml entry can be deleted directly — no resurrection on re-read', async () => {
+  // The platform's minimal repro: a .yml-only entry returned HTTP 200 on
+  // delete but the file survived and the entry reappeared on the next GET.
+  const host = makeHost({ rosterFiles: { '/roster/reader.yml': 'description: original file\n' } })
+  const view = jsonBody(await dispatch(host.web, API_PATH))
+  assert.ok((view['entries'] as Record<string, unknown>)['reader'] !== undefined)
+  const res = await postJson(host.web, { op: 'delete', id: 'reader', expectedHash: view['hash'] })
+  assert.equal(res.status, 200)
+  assert.equal(host.fs.files()['/roster/reader.yml'], undefined)
+  assert.equal(host.fs.files()['/roster/reader.yaml'], undefined)
+  const after = jsonBody(await dispatch(host.web, API_PATH))
+  assert.deepEqual(Object.keys(after['entries'] as Record<string, unknown>), [], 'must not resurrect')
+})
+
+test('full-snapshot save {} removes a .yml-only entry', async () => {
+  const host = makeHost({ rosterFiles: { '/roster/reader.yml': 'description: original file\n' } })
+  const res = await postJson(host.web, { op: 'save', entries: {} })
+  assert.equal(res.status, 200)
+  assert.deepEqual(Object.keys(jsonBody(res)['entries'] as Record<string, unknown>), [])
+  assert.equal(host.fs.files()['/roster/reader.yml'], undefined)
+})
+
+test('editing a .yml entry converges to a single .yaml; delete then sticks', async () => {
+  const host = makeHost({ rosterFiles: { '/roster/reader.yml': 'description: original file\n' } })
+  const res = await postJson(host.web, { op: 'save', entries: { reader: { description: 'updated' } } })
+  assert.equal(res.status, 200)
+  assert.equal(host.fs.files()['/roster/reader.yml'], undefined, 'the .yml sibling must be converged away')
+  assert.match(String(host.fs.files()['/roster/reader.yaml']), /description: updated/)
+  const diagnostics = (jsonBody(res)['diagnostics'] ?? []) as Array<{ message: string }>
+  assert.ok(!diagnostics.some((item) => /相同 id/.test(item.message)), 'no duplicate-id conflict may appear')
+  const del = await postJson(host.web, { op: 'delete', id: 'reader' })
+  assert.equal(del.status, 200)
+  assert.deepEqual(Object.keys(jsonBody(del)['entries'] as Record<string, unknown>), [])
+  assert.equal(host.fs.files()['/roster/reader.yaml'], undefined, 'no resurrection after delete')
+})
+
+test('.yml file coexisting with a legacy copy: save converges and keeps one file', async () => {
+  const host = makeHost({
+    user: { entries: { reader: { description: 'legacy copy' } } },
+    rosterFiles: { '/roster/reader.yml': 'description: file copy\n' },
+  })
+  const res = await postJson(host.web, { op: 'save', entries: { reader: { description: 'edited' } } })
+  assert.equal(res.status, 200)
+  assert.equal(host.fs.files()['/roster/reader.yml'], undefined)
+  assert.match(String(host.fs.files()['/roster/reader.yaml']), /description: edited/)
+  const diagnostics = (jsonBody(res)['diagnostics'] ?? []) as Array<{ message: string }>
+  assert.ok(!diagnostics.some((item) => /相同 id/.test(item.message)))
+})
+
 test('POST rejects an unknown op (400 unknown-op)', async () => {
   const host = hostWith()
   const res = await postJson(host.web, { op: 'explode' })

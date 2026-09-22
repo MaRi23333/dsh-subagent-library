@@ -113,6 +113,24 @@ test('loadRoster skips `_`-prefixed names silently (backups, drafts)', async () 
   assert.equal(view.diagnostics.length, 0)
 })
 
+test('writeEntryFile converges a .yml sibling; deleteEntryFile removes both spellings (YML-001)', async () => {
+  const fs = makeMemFs({
+    '/roster/reader.yml': 'description: old\n',
+    '/roster/reader.yaml': 'description: old\n',
+  })
+  await writeEntryFile({ dir: '/roster', id: 'reader', entry: ENTRY, fs })
+  assert.equal(fs.files()['/roster/reader.yml'], undefined, 'the .yml sibling must be converged away on save')
+  assert.match(String(fs.files()['/roster/reader.yaml']), /fake role/)
+  await deleteEntryFile('/roster', 'reader', fs)
+  assert.equal(fs.files()['/roster/reader.yaml'], undefined)
+})
+
+test('writeEntryFile on a fresh id must not touch unrelated files (YML-001 guard)', async () => {
+  const fs = makeMemFs({ '/roster/other.yml': 'description: unrelated\n' })
+  await writeEntryFile({ dir: '/roster', id: 'reader', entry: ENTRY, fs })
+  assert.equal(fs.files()['/roster/other.yml'], 'description: unrelated\n')
+})
+
 test('loadRoster escalates broken-file + legacy overlap to a loud error (A2)', async () => {
   // The silent-stale-config trap: the file is broken, the legacy copy serves,
   // delegate succeeds — the user believes their edit is live. Must be loud.
