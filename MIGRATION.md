@@ -56,8 +56,8 @@ subagent-library:
 升级到 0.3 并重启后，**首次使用名册时**（打开设置页、调用 `list_subagents`、或第一次 `delegate`）插件会：
 
 1. 读取 settings.yaml 里的旧 `entries`；
-2. 对每个条目：**如果名册目录里还没有同名 `<id>.yaml`，就导出一个**；
-   - 已存在同名文件 → **跳过，绝不覆盖**（你手写的文件是安全的）；
+2. 对每个条目：**如果名册目录里同名的 `<id>.yaml` 与 `<id>.yml` 均不存在，就导出一个**；
+   - 已存在同名任一后缀文件 → **跳过，绝不覆盖**（你手写的文件是安全的）；
    - id 非法（大写、超长、Windows 保留名）→ 跳过并在诊断里说明；
 3. **settings 里的旧段在迁移阶段原样保留**——它是你的回滚备份：自动迁移后旧副本仍保留，只有清理才会移除。注意区分两种操作：设置页**删除条目**会清除该 id 的 `.yaml` 与 `.yml` 名册文件，并一并移除其旧副本；点**「清除旧条目」**只移除已被文件覆盖的旧副本，不动任何名册文件。
 
@@ -143,7 +143,7 @@ npx @deepseek-ai/dsh plugin --profile web add dsh-subagent-library@0.2.8
 
 **File-name lifecycle** — Both `<id>.yaml` and `<id>.yml` are read. If both spellings already exist for one id, fix that conflict (keep one) before using the settings page. Deleting an entry removes both suffixes. Writes and deletes run per file, not as a directory-wide multi-file transaction: a failure is reported and may leave a partial result, so inspect the roster before retrying.
 
-**Automatic migration** — on the first roster use after upgrading, each legacy entry is exported to `<id>.yaml` **only if that file does not exist yet** (hand-written files are never overwritten; re-runs are idempotent). The legacy settings copies are **kept** as a rollback fallback; files take precedence. Legacy reading stays working throughout 0.3.x and is **removed in 0.4**. Deleting an entry from the settings page removes both its `<id>.yaml` and `<id>.yml` roster files **and** its legacy copy; the one-click cleanup only removes legacy copies that files already shadow and never touches roster files. Legacy copies persist after automatic migration until you clear them.
+**Automatic migration** — on the first roster use after upgrading, each legacy entry is exported to `<id>.yaml` **only when neither `<id>.yaml` nor `<id>.yml` exists** (if either spelling exists, hand-written files are never overwritten; re-runs are idempotent). The legacy settings copies are **kept** as a rollback fallback; files take precedence. Legacy reading stays working throughout 0.3.x and is **removed in 0.4**. Deleting an entry from the settings page removes both its `<id>.yaml` and `<id>.yml` roster files **and** its legacy copy; the one-click cleanup only removes legacy copies that files already shadow and never touches roster files. Legacy copies persist after automatic migration until you clear them.
 
 **Rollback** — install the old version (`dsh-subagent-library@0.2.8`); as long as you have not deleted the legacy `entries` section, 0.2.x keeps working exactly as before. The legacy copies are the rollback data source: editing or deleting them (including deleting entries or one-click cleanup) makes rollback return to the snapshot as of that moment — changes made in 0.3 roster files do not come back with the rollback.
 
