@@ -32,6 +32,10 @@ This file documents user-facing changes. Format loosely follows [Keep a Changelo
 
 ### 修复 / Fixed
 
+- **`.yml` 名册生命周期修复**：名册同时读取 `.yaml`/`.yml`；设置页保存有变化的条目统一收敛为 `<id>.yaml` 并移除同 id 的 `.yml`，删除条目同时清理两个后缀，避免删除 `.yaml` 后旧 `.yml` 复活。
+  - **`.yml` roster lifecycle fixed**: the roster reads both `.yaml` and `.yml`; saving changed content through the settings page converges to `<id>.yaml` and removes the same-id `.yml`; deleting an entry removes both suffixes, preventing an old `.yml` from resurrecting after `.yaml` is deleted.
+- **修复设置页保存/删除的 HTTP 重复响应**：补齐分支返回，确保 delete/save 每次只发送一次 HTTP 响应，避免真实服务触发 `ERR_HTTP_HEADERS_SENT`。
+  - **Duplicate HTTP responses fixed**: delete/save handlers now return after sending their response, so each request is answered exactly once and the real server avoids `ERR_HTTP_HEADERS_SENT`.
 - **双审加固（K3 实现复审 + GLM 红队）**：设置页保存**跳过内容未变的条目**——不再把未触碰的手写 YAML 文件重写为生成格式（手写注释得以保留）；名册文件损坏且存在同名 legacy 副本时，升级为 **error 级诊断**并明确提示「delegate 使用的是旧配置」（不再静默回退）；409 冲突**保留用户未保存的草稿**（只切换到最新基线，再次保存才会覆盖）；迁移失败（整体或单条）**自动重试**而非进程内永久搁浅；`reasoningEffort` 保存时校验为 effort id 形态（字母数字与 `._-`）；设置页只读时「清除旧条目」响亮 403 而非假成功；客户端补齐 wire 契约测试（parseView 此前丢失 legacyCount 导致迁移横幅不渲染的 bug 即在此层）。
   - Dual-review hardening (K3 implementation review + GLM red team): settings-page saves **skip unchanged entries** (untouched hand-written YAML files are no longer rewritten into generated format, preserving comments); a broken roster file with a same-id legacy copy now surfaces an **error-level** diagnostic saying delegation is using the old config (no more silent fallback); a 409 conflict **keeps the unsaved draft** (only the baseline switches — saving again overwrites); failed migration (whole-batch or per-entry) **retries automatically** instead of latching for the process lifetime; `reasoningEffort` is validated as an effort id on save (alphanumerics and `._-`); the read-only settings page refuses "clear legacy" loudly with 403 instead of faking success; client wire-contract tests added (parseView previously dropped legacyCount, which was exactly where the migration banner failed to render).
 
