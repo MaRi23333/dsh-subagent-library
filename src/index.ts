@@ -248,6 +248,12 @@ export function apply(ctx: Context, config: Config) {
     isWritable(): boolean
   }
   const SETTINGS_NS = 'subagent-library'
+  /** Shape of the parts of `ctx.configEditor` (DSH ≥0.1.7) the seam uses. */
+  interface ConfigEditorHost {
+    entries?(): Array<{ options?: { id?: unknown }; id?: unknown }>
+    edit(entry: unknown, change: (current: Record<string, unknown>, inherited: Record<string, unknown>) => Record<string, unknown>): Promise<void>
+  }
+  let configEditorHost: ConfigEditorHost | undefined
   let settings: SettingsSeam | undefined
   /** Non-null when the settings seam could not initialize (e.g. a hand-edited
    *  stored section fails the Config schema on the legacy register path).
@@ -294,18 +300,18 @@ export function apply(ctx: Context, config: Config) {
       return
     }
     if (typeof svc?.register !== 'function') {
-      // ── DSH ≥0.1.7 — profile-backed config (SettingsForms + configEditor) ──
+      // ── DSH ≥0.1.7 — profile-backed config (configEditor channel) ──────────
       // SettingsForms on 0.1.7 surfaces ONLY entries with volatile fields
       // (live secrets; red team blocker #1): describe() never contains us and
-      // mutate() throws "has no volatile fields". Ordinary config — including
-      // entriesDir and the imported legacy `entries` — lives in the profile
-      // patch and reaches this plugin through apply()'s config (the Loader
-      // re-applies on patch edits), so:
-      //   readConfig         = apply()'s config (NOT describe — its fallback
-      //                        once bound another plugin's entry by value
-      //                        shape, red team major #2)
-      //   legacy read/unset  = the profile patch via ctx.configEditor, the
-      //                        same channel the host's own write() uses.
+      // mutate() throws "has no volatile fields" — the service is unusable
+      // for ordinary plugin config. Ordinary config — including entriesDir
+      // and the imported legacy `entries` — reaches this plugin through
+      // apply()'s config (the Loader re-applies on patch edits), so:
+      //   readConfig        = apply()'s config (NOT describe — its value-shape
+      //                       fallback once bound another plugin's entry,
+      //                       red team major #2)
+      //   legacy read/unset = profile patch via ctx.configEditor, whose
+      //                       inject is bound separately below (0.1.7+ only).
       /** Reflect a reconciled config into the apply()-closure immediately:
        *  the Loader reconcile may restart this plugin asynchronously, but the
        *  in-flight HTTP response must not report a stale legacyCount
@@ -317,21 +323,15 @@ export function apply(ctx: Context, config: Config) {
         }
         Object.assign(target, next)
       }
-      /** Resolved lazily at call time: configEditor may not be running when
-       *  the settings service starts. */
-      const configEditorOf = (): {
-        entries?(): Array<{ options?: { id?: unknown }; id?: unknown }>
-        edit(entry: unknown, change: (current: Record<string, unknown>, inherited: Record<string, unknown>) => Record<string, unknown>): Promise<void>
-      } | undefined => (sctx as unknown as Record<string, unknown>).configEditor as never
       settings = {
         readConfig: () => config,
         legacyUserEntries: () => (config.entries ?? undefined) as Record<string, Entry> | undefined,
         unsetEntries: async (ids) => {
           if (ids.length === 0) return 'done'
-          const editor = configEditorOf()
-          if (editor?.entries === undefined || editor.edit === undefined) return 'no-settings'
+          const editor = configEditorHost
+          if (editor === undefined) return 'no-settings'
           if (svc.writable === false) return 'skipped-readonly'
-          const entry = editor.entries().find((row) => {
+          const entry = editor.entries?.().find((row) => {
             const id = (row.options as { id?: unknown } | undefined)?.id ?? row.id
             return String(id ?? '') === SETTINGS_NS
           })
@@ -371,6 +371,15 @@ export function apply(ctx: Context, config: Config) {
     // Neither generation detected: the seam stays undefined and every
     // consumer degrades to apply()'s base config — the roster FILE path (the
     // primary storage since 0.3.0) does not depend on the settings service.
+  })
+  // ── configEditor binding (DSH ≥0.1.7 only) ─────────────────────────────────
+  // Its own inject on purpose: ≤0.1.6 hosts have no configEditor service, so
+  // this callback never fires there and the legacy seam keeps using its own
+  // mutate(). On ≥0.1.7 it hands the editor to the ≥0.1.7 seam for legacy
+  // unset / clear-legacy.
+  ctx.inject(['settings', 'configEditor'], (ectx: Context) => {
+    const editor = (ectx as unknown as Record<string, unknown>).configEditor as ConfigEditorHost | undefined
+    if (editor !== undefined) configEditorHost = editor
   })
   /** Library entries restricted to schema-consistent ids: a hand-written key
    *  like `k3_reviewer` passes z.dict (any string key) but can never be

@@ -297,7 +297,9 @@ export function makeHost(options: HostOptions = {}): MockHost {
   const settings = makeSettings(options)
   const subagentStarts: MockHost['subagentStarts'] = []
   const toolViewScopes: MockHost['toolViewScopes'] = []
-  let settingsCb: ((sctx: unknown) => void) | undefined
+  /** The plugin registers TWO settings injects on ≥0.1.7 (seam +
+   *  configEditor binding); the mock must fire ALL of them. */
+  const settingsCbs: Array<(sctx: unknown) => void> = []
   const fs = makeMemFs(options.rosterFiles)
   const applyConfig: Config = {
     subagentProvider: 'spawn',
@@ -322,7 +324,7 @@ export function makeHost(options: HostOptions = {}): MockHost {
   const ctx = {
     inject(deps: string[], cb: (ictx: unknown) => void): void {
       if (deps.includes('settings')) {
-        settingsCb = cb
+        settingsCbs.push(cb)
         return
       }
       if (deps.includes('webServer')) {
@@ -363,15 +365,15 @@ export function makeHost(options: HostOptions = {}): MockHost {
   ;(ctx as unknown as Record<symbol, unknown>)[kFsPort] = fs
 
   apply(ctx as never, applyConfig)
-  if (settingsCb === undefined) throw new Error('apply() did not register a settings inject callback')
+  if (settingsCbs.length === 0) throw new Error('apply() did not register a settings inject callback')
   // 'forms' mimics DSH ≥0.1.7 (SettingsForms + ctx.configEditor, no
   // register()) — the plugin must detect the generation structurally and
-  // route ordinary config edits through configEditor.
-  if (options.settingsShape === 'forms') {
-    settingsCb({ settings: forms, configEditor: forms.configEditor, effect: (fn: () => unknown) => fn() })
-  } else {
-    settingsCb({ settings, effect: (fn: () => unknown) => fn() })
-  }
+  // route ordinary config edits through configEditor. Fire ALL registered
+  // settings injects (the plugin has two on ≥0.1.7: seam + editor binding).
+  const sctxFor = options.settingsShape === 'forms'
+    ? { settings: forms, configEditor: forms.configEditor, effect: (fn: () => unknown) => fn() }
+    : { settings, effect: (fn: () => unknown) => fn() }
+  for (const cb of settingsCbs) cb(sctxFor)
 
   return { web, tools, settings, forms, subagentStarts, toolViewScopes, fs }
 }
