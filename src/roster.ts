@@ -251,6 +251,27 @@ export const entryFileName = (id: string): string => `${id}.yaml`
  *  survives a delete would resurrect after every restart (SUB-ROSTER-YML-001). */
 export const entryFileNames = (id: string): string[] => [`${id}.yaml`, `${id}.yml`]
 
+/** Remove a same-id `.yml` sibling (the failed-convergence residue), with
+ *  bounded retries for transient Windows locks; ENOENT = already clean. */
+export async function removeYmlSibling(
+  dir: string,
+  id: string,
+  fsp: FsPort = nodeFsPort,
+  delay: (ms: number) => Promise<void> = defaultDelay,
+): Promise<void> {
+  const ymlSibling = nodePath.join(dir, `${id}.yml`)
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await fsp.unlink(ymlSibling)
+      return
+    } catch (error) {
+      if (isEnoent(error)) return
+      if (attempt >= 2) throw error
+      await delay(50 * 3 ** attempt)
+    }
+  }
+}
+
 /** Atomic single-file write: temp name in the roster dir, then rename with
  *  bounded retries (Windows AV/indexer transiently lock fresh files). */
 export async function writeEntryFile(options: {
@@ -283,17 +304,7 @@ export async function writeEntryFile(options: {
   // create a duplicate-id conflict on the next read and resurrect the OLD
   // entry when the new `.yaml` is deleted (SUB-ROSTER-YML-001). Removing it
   // here is the documented convergence semantics: 保存统一收敛为 `.yaml`。
-  const ymlSibling = nodePath.join(options.dir, `${options.id}.yml`)
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      await fsp.unlink(ymlSibling)
-      break
-    } catch (error) {
-      if (isEnoent(error)) break
-      if (attempt >= 2) throw error
-      await wait(50 * 3 ** attempt)
-    }
-  }
+  await removeYmlSibling(options.dir, options.id, fsp, wait)
 }
 
 /** Remove every on-disk spelling that can serve one id (`.yaml` AND `.yml`);

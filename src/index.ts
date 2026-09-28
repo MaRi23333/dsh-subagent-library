@@ -49,11 +49,13 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import {
   ENTRY_ID,
   deleteEntryFile,
+  entryFileName,
   kFsPort,
   loadRoster,
   migrateLegacyEntries,
   nodeFsPort,
   parseEntryDocument,
+  removeYmlSibling,
   resolveEntriesDir,
   serializeEntry,
   validateEntryId,
@@ -278,8 +280,9 @@ export function apply(ctx: Context, config: Config) {
           legacyUserEntries: () => legacyRaw()?.entries,
           unsetEntries: async (ids) => {
             if (ids.length === 0) return 'done'
+            if (typeof svc.mutate !== 'function') return 'no-settings'
             if (svc.writable === false) return 'skipped-readonly'
-            await svc.mutate!(SETTINGS_NS, ids.map((id) => ({ op: 'unset', path: ['entries', id] })))
+            await svc.mutate(SETTINGS_NS, ids.map((id) => ({ op: 'unset', path: ['entries', id] })))
             return 'done'
           },
           isWritable: () => svc.writable !== false,
@@ -289,35 +292,53 @@ export function apply(ctx: Context, config: Config) {
       }
       return
     }
-    if (typeof svc?.describe === 'function' && typeof svc?.mutate === 'function') {
-      // ── DSH ≥0.1.7 — profile-backed SettingsForms ─────────────────────────
-      // The namespace is the profile entry id; a MISSING entry means "no
-      // overrides" and apply()'s base config serves. Reads degrade to the
-      // base config on a describe hiccup instead of failing the roster.
-      const describeRows = svc.describe
-      const mutateOps = svc.mutate
-      const findOurs = (): { value?: unknown; user?: unknown; revision: number } | undefined => {
-        try {
-          const rows = describeRows()
-          return rows.find((row) => String(row.ns) === SETTINGS_NS)
-            ?? rows.find((row) => typeof row.value === 'object' && row.value !== null
-              && Object.hasOwn(row.value as Record<string, unknown>, 'subagentProvider'))
-        } catch {
-          return undefined
+    if (typeof svc?.register !== 'function') {
+      // ── DSH ≥0.1.7 — profile-backed config (SettingsForms + configEditor) ──
+      // SettingsForms on 0.1.7 surfaces ONLY entries with volatile fields
+      // (live secrets; red team blocker #1): describe() never contains us and
+      // mutate() throws "has no volatile fields". Ordinary config — including
+      // entriesDir and the imported legacy `entries` — lives in the profile
+      // patch and reaches this plugin through apply()'s config (the Loader
+      // re-applies on patch edits), so:
+      //   readConfig         = apply()'s config (NOT describe — its fallback
+      //                        once bound another plugin's entry by value
+      //                        shape, red team major #2)
+      //   legacy read/unset  = the profile patch via ctx.configEditor, the
+      //                        same channel the host's own write() uses.
+      const configEditor = (sctx as unknown as {
+        configEditor?: {
+          entries(): Array<{ id: string }>
+          edit(entry: unknown, change: (current: Record<string, unknown>, inherited: Record<string, unknown>) => Record<string, unknown> | undefined): Promise<void>
         }
-      }
+      }).configEditor
       settings = {
-        readConfig: () => findOurs()?.value as Config | undefined,
-        legacyUserEntries: () => {
-          const raw = (findOurs()?.user ?? undefined) as { entries?: Record<string, Entry> } | undefined
-          return raw?.entries
-        },
+        readConfig: () => config,
+        legacyUserEntries: () => (config.entries ?? undefined) as Record<string, Entry> | undefined,
         unsetEntries: async (ids) => {
           if (ids.length === 0) return 'done'
-          const ours = findOurs()
-          if (ours === undefined) return 'no-settings'
+          if (configEditor === undefined) return 'no-settings'
           if (svc.writable === false) return 'skipped-readonly'
-          await mutateOps(SETTINGS_NS, ids.map((id) => ({ op: 'unset', path: ['entries', id] })), ours.revision)
+          const entry = configEditor.entries().find((row) => row.id === SETTINGS_NS)
+          if (entry === undefined) return 'no-settings'
+          await configEditor.edit(entry, (current) => {
+            const entries = current['entries']
+            if (typeof entries !== 'object' || entries === null) return undefined
+            const next = { ...(entries as Record<string, unknown>) }
+            let changed = false
+            for (const id of ids) {
+              if (Object.hasOwn(next, id)) {
+                delete next[id]
+                changed = true
+              }
+            }
+            if (!changed) return undefined
+            if (Object.keys(next).length === 0) {
+              const copy = { ...current }
+              delete copy['entries']
+              return copy
+            }
+            return { ...current, entries: next }
+          })
           return 'done'
         },
         isWritable: () => svc.writable !== false,
@@ -622,10 +643,19 @@ export function apply(ctx: Context, config: Config) {
             // settings-page save must not rewrite untouched files, because
             // serializeEntry is program-generated and would destroy
             // hand-written comments in files the user never opened (A1).
+            // The skip only applies to CANONICAL `.yaml` rows: a `.yml` row
+            // (or any failed-convergence residue) must still be rewritten so
+            // it converges — otherwise an unchanged-content retry after a
+            // failed convergence would deadlock with the duplicate-id
+            // diagnostic forever (red team #3).
             for (const [id, doc] of validated) {
               const prev = current.entries[id]
-              if (prev?.source === 'file'
+              const onCanonicalFile = prev?.source === 'file' && prev.file === entryFileName(id)
+              if (onCanonicalFile
                 && serializeEntry(prev.entry, prev.enabled) === serializeEntry(doc.entry, doc.enabled)) {
+                // Identical canonical row — still sweep a leftover `.yml`
+                // sibling left by a previously failed convergence.
+                await removeYmlSibling(current.dir, id, fsPort()).catch(() => { /* retried on the next save */ })
                 continue
               }
               await writeEntryFile({ dir: current.dir, id, entry: doc.entry, enabled: doc.enabled, fs: fsPort() })

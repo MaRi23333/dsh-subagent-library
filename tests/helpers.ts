@@ -63,44 +63,66 @@ export interface SettingsOptions {
   settingsShape?: 'legacy' | 'forms'
 }
 
-/** DSH ≥0.1.7 SettingsForms double: profile entry `subagent-library` with the
- *  legacy `entries` living in the user patch layer (post-import semantics). */
+/** DSH ≥0.1.7 double: SettingsForms (writable flag only — the plugin must NOT
+ *  use describe/mutate on this generation) plus the `ctx.configEditor` the
+ *  plugin is expected to use for ordinary profile-config edits. The patch
+ *  layer for entry `subagent-library` tracks legacy `entries`. */
 export interface MockFormsSettings {
   writable: boolean
-  describe: () => Array<{ ns: string; user?: unknown; value?: unknown; revision: number }>
-  mutate: (ns: string, ops: Array<{ op: string; path: ReadonlyArray<string> }>, expectedRevision?: number) => Promise<void>
-  /** Current user-patch entries (what unsetLegacy removes from). */
+  configEditor: {
+    entries(): Array<{ id: string }>
+    edit(
+      entry: unknown,
+      change: (current: Record<string, unknown>, inherited: Record<string, unknown>) => Record<string, unknown> | undefined,
+    ): Promise<void>
+  }
+  /** Current legacy `entries` in the profile patch (what unsetLegacy clears). */
   userEntries: () => Record<string, Entry>
   revision: () => number
 }
 
-export function makeFormsSettings(options: SettingsOptions = {}, rosterDir: string): MockFormsSettings {
+export function makeFormsSettings(
+  options: SettingsOptions,
+  rosterDir: string,
+  /** The apply()-arg config object — mutated in place by edit(), mirroring
+   *  the real Loader reconciliation so the plugin's `config` closure stays
+   *  current without a restart. */
+  configRef: Config,
+): MockFormsSettings {
   let revision = 41
+  // The patch layer starts as a mirror of the apply()-arg entries: in real
+  // 0.1.7 the settings import moved those sections into the profile patch.
   const userEntries: Record<string, Entry> = {
-    ...((options.user?.entries ?? {}) as Record<string, Entry>),
+    ...((configRef['entries'] ?? {}) as Record<string, Entry>),
   }
-  const value: Record<string, unknown> = {
+  const entry = { id: 'subagent-library' }
+  const current = (): Record<string, unknown> => ({
     subagentProvider: 'spawn',
-    entriesDir: options.rosterDir ?? '/roster',
-    ...(options.baseEntries !== undefined ? { entries: options.baseEntries } : {}),
-  }
+    entriesDir: rosterDir,
+    entries: { ...userEntries },
+  })
   return {
     writable: options.writable ?? true,
-    describe: () => [{
-      ns: 'subagent-library',
-      user: { entries: { ...userEntries } },
-      value: { ...value },
-      revision,
-    }],
-    async mutate(_ns, ops) {
-      for (const op of ops) {
-        if (op.op === 'unset' && op.path[0] === 'entries' && typeof op.path[1] === 'string') {
-          delete userEntries[op.path[1]]
+    configEditor: {
+      entries: () => [entry],
+      async edit(_entryTarget, change) {
+        const next = change(current(), {})
+        if (next === undefined) return
+        // Loader reconciliation semantics: the entry's live config becomes
+        // exactly `next` — keys dropped from `next` disappear from the config.
+        for (const key of Object.keys(configRef)) {
+          if (!(key in next)) delete configRef[key]
         }
-      }
-      revision += 1
+        Object.assign(configRef, next)
+        revision += 1
+      },
     },
-    userEntries: () => ({ ...userEntries }),
+    userEntries: () => {
+      const entries = configRef['entries']
+      return typeof entries === 'object' && entries !== null
+        ? { ...(entries as Record<string, Entry>) }
+        : {}
+    },
     revision: () => revision,
   }
 }
@@ -276,7 +298,12 @@ export function makeHost(options: HostOptions = {}): MockHost {
   const toolViewScopes: MockHost['toolViewScopes'] = []
   let settingsCb: ((sctx: unknown) => void) | undefined
   const fs = makeMemFs(options.rosterFiles)
-  const forms = makeFormsSettings(options, options.rosterDir ?? '/roster')
+  const applyConfig: Config = {
+    subagentProvider: 'spawn',
+    entries: options.baseEntries ?? {},
+    entriesDir: options.rosterDir ?? '/roster',
+  }
+  const forms = makeFormsSettings(options, options.rosterDir ?? '/roster', applyConfig)
 
   const providerNames = options.subagentProviders ?? []
   const providers = new Map(providerNames.map((providerName) => [providerName, {
@@ -334,16 +361,16 @@ export function makeHost(options: HostOptions = {}): MockHost {
   // injected BEFORE apply() so every roster read/write lands in memory.
   ;(ctx as unknown as Record<symbol, unknown>)[kFsPort] = fs
 
-  apply(ctx as never, {
-    subagentProvider: 'spawn',
-    entries: options.baseEntries ?? {},
-    entriesDir: options.rosterDir ?? '/roster',
-  })
+  apply(ctx as never, applyConfig)
   if (settingsCb === undefined) throw new Error('apply() did not register a settings inject callback')
-  // 'forms' mimics DSH ≥0.1.7 (SettingsForms, no register()) — the plugin
-  // must detect the generation structurally and keep working.
-  const seam = options.settingsShape === 'forms' ? forms : settings
-  settingsCb({ settings: seam, effect: (fn: () => unknown) => fn() })
+  // 'forms' mimics DSH ≥0.1.7 (SettingsForms + ctx.configEditor, no
+  // register()) — the plugin must detect the generation structurally and
+  // route ordinary config edits through configEditor.
+  if (options.settingsShape === 'forms') {
+    settingsCb({ settings: forms, configEditor: forms.configEditor, effect: (fn: () => unknown) => fn() })
+  } else {
+    settingsCb({ settings, effect: (fn: () => unknown) => fn() })
+  }
 
   return { web, tools, settings, forms, subagentStarts, toolViewScopes, fs }
 }

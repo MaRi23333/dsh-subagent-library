@@ -321,7 +321,7 @@ test('POST clear-legacy with read-only settings fails loudly (403 readonly)', as
 test('SettingsForms host: GET reads the profile entry and serves the roster', async () => {
   const host = makeHost({
     settingsShape: 'forms',
-    user: { entries: { alpha: { ...ENTRY } } },
+    baseEntries: { alpha: { ...ENTRY } },
     rosterFiles: { '/roster/alpha.yml': 'description: file copy\n' },
   })
   const res = await dispatch(host.web, API_PATH)
@@ -333,17 +333,17 @@ test('SettingsForms host: GET reads the profile entry and serves the roster', as
   assert.equal(body['legacyCount'], 1)
 })
 
-test('SettingsForms host: clear-legacy unsets through mutate() with the live revision', async () => {
+test('SettingsForms host: clear-legacy edits the profile patch via configEditor', async () => {
   const host = makeHost({
     settingsShape: 'forms',
-    user: { entries: { alpha: { ...ENTRY } } },
+    baseEntries: { alpha: { ...ENTRY } },
     rosterFiles: { '/roster/alpha.yml': 'description: file copy\n' },
   })
   const res = await postJson(host.web, { op: 'clear-legacy' })
   assert.equal(res.status, 200)
   assert.equal(jsonBody(res)['legacyCount'], 0)
-  assert.deepEqual(host.forms.userEntries(), {}, 'legacy entries unset via SettingsForms.mutate')
-  assert.equal(host.forms.revision() > 41, true, 'mutate advanced the revision')
+  assert.deepEqual(host.forms.userEntries(), {}, 'legacy entries removed via configEditor')
+  assert.equal(host.forms.revision() > 41, true, 'configEditor advanced the revision')
   // The roster file keeps serving.
   assert.equal((jsonBody(await dispatch(host.web, API_PATH))['entries'] as Record<string, unknown>)['alpha'] !== undefined, true)
 })
@@ -352,16 +352,30 @@ test('SettingsForms host: read-only settings skips legacy unset with a warning d
   const host = makeHost({
     settingsShape: 'forms',
     writable: false,
-    user: { entries: { doomed: { ...ENTRY } } },
+    baseEntries: { doomed: { ...ENTRY } },
     rosterFiles: { '/roster/doomed.yml': 'description: doomed\n' },
   })
   const res = await postJson(host.web, { op: 'delete', id: 'doomed' })
   assert.equal(res.status, 200)
   const body = jsonBody(res)
-  assert.deepEqual(Object.keys(body['entries'] as Record<string, unknown>), [])
   const diagnostics = (body['diagnostics'] ?? []) as Array<{ severity: string, message: string }>
   assert.ok(diagnostics.some((item) => item.severity === 'warning' && /旧副本/.test(item.message)), 'the resurrection risk must be surfaced')
-  assert.deepEqual(host.forms.userEntries()['doomed'] !== undefined, true, 'legacy copy untouched under read-only')
+  // Under read-only settings the legacy copy survives and LEGITIMATELY keeps
+  // serving — that is exactly what the warning diagnostic declares.
+  assert.equal((body['entries'] as Record<string, unknown>)['doomed'] !== undefined, true)
+  assert.equal(host.forms.userEntries()['doomed'] !== undefined, true, 'legacy copy untouched under read-only')
+})
+
+test('.yml row with identical content still converges on save (no skip-deadlock)', async () => {
+  // Red team #3: an unchanged-content retry after a failed convergence used
+  // to hit skip-identical forever, leaving the duplicate-id error in place.
+  const host = makeHost({ rosterFiles: { '/roster/reader.yml': 'description: original file\n' } })
+  const res = await postJson(host.web, { op: 'save', entries: { reader: { description: 'original file' } } })
+  assert.equal(res.status, 200)
+  assert.equal(host.fs.files()['/roster/reader.yml'], undefined, 'the .yml must be converged away')
+  assert.match(String(host.fs.files()['/roster/reader.yaml']), /description: original file/)
+  const diagnostics = (jsonBody(res)['diagnostics'] ?? []) as Array<{ message: string }>
+  assert.ok(!diagnostics.some((item) => /相同 id/.test(item.message)))
 })
 
 test('POST save skips byte-identical rows — untouched files keep hand-written comments', async () => {
