@@ -267,9 +267,10 @@ export function apply(ctx: Context, config: Config) {
       // ── DSH ≤0.1.6 — register() + live scope.get() ────────────────────────
       try {
         const scope = svc.register(SETTINGS_NS, Config, { base: config })
+        const describeRows = svc.describe
         const legacyRaw = (): { entries?: Record<string, Entry> } | undefined => {
           try {
-            const row = svc.describe?.().find((candidate) => String(candidate.ns) === SETTINGS_NS)
+            const row = describeRows?.().find((candidate) => String(candidate.ns) === SETTINGS_NS)
             return (row?.user ?? undefined) as { entries?: Record<string, Entry> } | undefined
           } catch {
             return undefined
@@ -305,47 +306,71 @@ export function apply(ctx: Context, config: Config) {
       //                        shape, red team major #2)
       //   legacy read/unset  = the profile patch via ctx.configEditor, the
       //                        same channel the host's own write() uses.
-      const configEditor = (sctx as unknown as {
-        configEditor?: {
-          entries(): Array<{ id: string }>
-          edit(entry: unknown, change: (current: Record<string, unknown>, inherited: Record<string, unknown>) => Record<string, unknown> | undefined): Promise<void>
+      /** Reflect a reconciled config into the apply()-closure immediately:
+       *  the Loader reconcile may restart this plugin asynchronously, but the
+       *  in-flight HTTP response must not report a stale legacyCount
+       *  (red team re-verification minor #3). */
+      const applyConfigPatch = (next: Record<string, unknown>): void => {
+        const target = config as unknown as Record<string, unknown>
+        for (const key of Object.keys(target)) {
+          if (!(key in next)) delete target[key]
         }
-      }).configEditor
+        Object.assign(target, next)
+      }
+      /** Resolved lazily at call time: configEditor may not be running when
+       *  the settings service starts. */
+      const configEditorOf = (): {
+        entries?(): Array<{ options?: { id?: unknown }; id?: unknown }>
+        edit(entry: unknown, change: (current: Record<string, unknown>, inherited: Record<string, unknown>) => Record<string, unknown>): Promise<void>
+      } | undefined => (sctx as unknown as Record<string, unknown>).configEditor as never
       settings = {
         readConfig: () => config,
         legacyUserEntries: () => (config.entries ?? undefined) as Record<string, Entry> | undefined,
         unsetEntries: async (ids) => {
           if (ids.length === 0) return 'done'
-          if (configEditor === undefined) return 'no-settings'
+          const editor = configEditorOf()
+          if (editor?.entries === undefined || editor.edit === undefined) return 'no-settings'
           if (svc.writable === false) return 'skipped-readonly'
-          const entry = configEditor.entries().find((row) => row.id === SETTINGS_NS)
+          const entry = editor.entries().find((row) => {
+            const id = (row.options as { id?: unknown } | undefined)?.id ?? row.id
+            return String(id ?? '') === SETTINGS_NS
+          })
           if (entry === undefined) return 'no-settings'
-          await configEditor.edit(entry, (current) => {
-            const entries = current['entries']
-            if (typeof entries !== 'object' || entries === null) return undefined
-            const next = { ...(entries as Record<string, unknown>) }
+          let applied: Record<string, unknown> | undefined
+          await editor.edit(entry, (current) => {
+            // Start from the MERGED entries view (patch + inherited): a plain
+            // patch delete cannot remove an inherited key, so the converged
+            // set is written back as an explicit override. The callback must
+            // ALWAYS return an object — undefined violates the host contract
+            // (red team re-verification major #2).
+            const patchEntries = (typeof current['entries'] === 'object' && current['entries'] !== null
+              ? { ...(current['entries'] as Record<string, unknown>) }
+              : {})
+            const merged = {
+              ...((config.entries ?? {}) as Record<string, unknown>),
+              ...patchEntries,
+            }
             let changed = false
             for (const id of ids) {
-              if (Object.hasOwn(next, id)) {
-                delete next[id]
+              if (Object.hasOwn(merged, id)) {
+                delete merged[id]
                 changed = true
               }
             }
-            if (!changed) return undefined
-            if (Object.keys(next).length === 0) {
-              const copy = { ...current }
-              delete copy['entries']
-              return copy
-            }
-            return { ...current, entries: next }
+            const next = changed ? { ...current, entries: merged } : { ...current }
+            applied = next
+            return next
           })
+          if (applied !== undefined) applyConfigPatch(applied)
           return 'done'
         },
         isWritable: () => svc.writable !== false,
       }
       return
     }
-    settingsFailure = '宿主设置服务不可识别（缺少 register 与 describe）——名册文件功能不受影响，但旧条目兜底与清除不可用。'
+    // Neither generation detected: the seam stays undefined and every
+    // consumer degrades to apply()'s base config — the roster FILE path (the
+    // primary storage since 0.3.0) does not depend on the settings service.
   })
   /** Library entries restricted to schema-consistent ids: a hand-written key
    *  like `k3_reviewer` passes z.dict (any string key) but can never be

@@ -66,14 +66,16 @@ export interface SettingsOptions {
 /** DSH ≥0.1.7 double: SettingsForms (writable flag only — the plugin must NOT
  *  use describe/mutate on this generation) plus the `ctx.configEditor` the
  *  plugin is expected to use for ordinary profile-config edits. The patch
- *  layer for entry `subagent-library` tracks legacy `entries`. */
+ *  layer for entry `subagent-library` tracks legacy `entries`. The rows use
+ *  the REAL cordis Loader Entry shape (id at `options.id`) so a shape mistake
+ *  in the plugin cannot hide behind the mock (red team re-verification #1). */
 export interface MockFormsSettings {
   writable: boolean
   configEditor: {
-    entries(): Array<{ id: string }>
+    entries(): Array<{ options: { id: string } }>
     edit(
       entry: unknown,
-      change: (current: Record<string, unknown>, inherited: Record<string, unknown>) => Record<string, unknown> | undefined,
+      change: (current: Record<string, unknown>, inherited: Record<string, unknown>) => Record<string, unknown>,
     ): Promise<void>
   }
   /** Current legacy `entries` in the profile patch (what unsetLegacy clears). */
@@ -90,16 +92,15 @@ export function makeFormsSettings(
   configRef: Config,
 ): MockFormsSettings {
   let revision = 41
-  // The patch layer starts as a mirror of the apply()-arg entries: in real
-  // 0.1.7 the settings import moved those sections into the profile patch.
-  const userEntries: Record<string, Entry> = {
-    ...((configRef['entries'] ?? {}) as Record<string, Entry>),
-  }
-  const entry = { id: 'subagent-library' }
+  const entry = { options: { id: 'subagent-library' } }
+  // SINGLE source of truth = configRef (the plugin's own closure): current()
+  // and userEntries() MUST read the same store, or the change() callback sees
+  // a pre-edit snapshot forever (k3 audit: dual data sources masked the
+  // options.id blocker).
   const current = (): Record<string, unknown> => ({
     subagentProvider: 'spawn',
     entriesDir: rosterDir,
-    entries: { ...userEntries },
+    entries: { ...((configRef['entries'] ?? {}) as Record<string, Entry>) },
   })
   return {
     writable: options.writable ?? true,
@@ -107,7 +108,7 @@ export function makeFormsSettings(
       entries: () => [entry],
       async edit(_entryTarget, change) {
         const next = change(current(), {})
-        if (next === undefined) return
+        if (next === undefined) throw new Error('configEditor change must return an object (host contract)')
         // Loader reconciliation semantics: the entry's live config becomes
         // exactly `next` — keys dropped from `next` disappear from the config.
         for (const key of Object.keys(configRef)) {
