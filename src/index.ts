@@ -273,10 +273,14 @@ export function apply(ctx: Context, config: Config) {
       // ── DSH ≤0.1.6 — register() + live scope.get() ────────────────────────
       try {
         const scope = svc.register(SETTINGS_NS, Config, { base: config })
-        const describeRows = svc.describe
         const legacyRaw = (): { entries?: Record<string, Entry> } | undefined => {
           try {
-            const row = describeRows?.().find((candidate) => String(candidate.ns) === SETTINGS_NS)
+            // Method-call form ON PURPOSE: the real SettingsProvider.describe
+            // depends on `this` — a detached alias (`const d = svc.describe;
+            // d()`) throws, the catch below swallows it, and legacyCount
+            // falsely reports 0 while clear-legacy claims success
+            // (SUB-COMPAT-017-001).
+            const row = svc.describe?.().find((candidate) => String(candidate.ns) === SETTINGS_NS)
             return (row?.user ?? undefined) as { entries?: Record<string, Entry> } | undefined
           } catch {
             return undefined
@@ -528,11 +532,21 @@ export function apply(ctx: Context, config: Config) {
     return Object.keys(raw).filter((id) => ENTRY_ID.test(id) && view.entries[id]?.source === 'file')
   }
 
-  const wireView = async (legacySkipWarning = false): Promise<Record<string, unknown>> => {
+  const wireView = async (
+    legacySkipWarning = false,
+    /** Extra op-level warnings (e.g. a failed `.yml` sweep) that must reach
+     *  the client alongside the roster diagnostics (SUB-COMPAT-017-002). */
+    extraWarnings: string[] = [],
+  ): Promise<Record<string, unknown>> => {
     const { view } = await loadLibrary()
-    const diagnostics = legacySkipWarning
-      ? [{ severity: 'warning' as const, message: '设置服务只读：settings 中的旧副本未能同步移除，被删条目可能以旧副本复活' }, ...view.diagnostics]
-      : view.diagnostics
+    const opWarnings = extraWarnings.map((message) => ({ severity: 'warning' as const, message }))
+    const diagnostics = [
+      ...opWarnings,
+      ...(legacySkipWarning
+        ? [{ severity: 'warning' as const, message: '设置服务只读：settings 中的旧副本未能同步移除，被删条目可能以旧副本复活' }]
+        : []),
+      ...view.diagnostics,
+    ]
     return {
       ok: true,
       writable: true,
@@ -682,14 +696,22 @@ export function apply(ctx: Context, config: Config) {
             // it converges — otherwise an unchanged-content retry after a
             // failed convergence would deadlock with the duplicate-id
             // diagnostic forever (red team #3).
+            const sweepWarnings: string[] = []
             for (const [id, doc] of validated) {
               const prev = current.entries[id]
               const onCanonicalFile = prev?.source === 'file' && prev.file === entryFileName(id)
               if (onCanonicalFile
                 && serializeEntry(prev.entry, prev.enabled) === serializeEntry(doc.entry, doc.enabled)) {
                 // Identical canonical row — still sweep a leftover `.yml`
-                // sibling left by a previously failed convergence.
-                await removeYmlSibling(current.dir, id, fsPort()).catch(() => { /* retried on the next save */ })
+                // sibling left by a previously failed convergence. A sweep
+                // failure must NOT be silent (SUB-COMPAT-017-002): the save
+                // itself succeeded, but the duplicate-id conflict stays until
+                // the sweep succeeds — surface it as a response warning.
+                try {
+                  await removeYmlSibling(current.dir, id, fsPort())
+                } catch (error) {
+                  sweepWarnings.push(`条目 "${id}" 的同名 .yml 残留清除失败，冲突诊断会持续到清除成功：${String(error)}`)
+                }
                 continue
               }
               await writeEntryFile({ dir: current.dir, id, entry: doc.entry, enabled: doc.enabled, fs: fsPort() })
@@ -701,7 +723,7 @@ export function apply(ctx: Context, config: Config) {
               if (row.source === 'file') await deleteEntryFile(current.dir, id, fsPort())
             }
             const unset = await unsetLegacy(deletedIds)
-            sendJson(res, 200, await wireView(unset === 'skipped-readonly'))
+            sendJson(res, 200, await wireView(unset === 'skipped-readonly', sweepWarnings))
             return
           } else {
             sendJson(res, 400, { ok: false, error: 'unknown-op' })

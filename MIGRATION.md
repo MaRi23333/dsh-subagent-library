@@ -53,7 +53,7 @@ subagent-library:
 > - **DSH ≤0.1.6**：上面这段写在 `~/.dsh/settings.yaml`；
 > - **DSH ≥0.1.7**：settings.yaml 已被宿主迁移为 `settings.yaml.imported`，插件级配置写在 **web profile 的 `cordis.patch.yml`**（`- id: subagent-library` 条目的 `config` 下）。
 
-文件**热生效**：改完保存即可，无需重启。设置页与手编文件的数据**双向等价**，但要注意：通过设置页保存某个条目且内容有变化时，**该条目统一写为 `<id>.yaml`，并移除同 id 的 `<id>.yml`**（这个文件里的手写注释与自定义排版会丢失）；**本次保存中内容未变化的条目一律跳过写入，原文件和注释原样保留**。想保留注释的手编文件，请直接手编，别在设置页里动它。
+文件**热生效**：改完保存即可，无需重启。设置页与手编文件的数据**双向等价**，但要注意：通过设置页保存某个条目且内容有变化时，**该条目统一写为 `<id>.yaml`，并移除同 id 的 `<id>.yml`**（这个文件里的手写注释与自定义排版会丢失）；**本次保存中内容未变化的规范 `.yaml` 条目一律跳过写入，原文件和注释原样保留；`.yml` 条目即使内容未变也会收敛重写为生成格式 `.yaml`（其注释丢失）**。想保留注释的手编文件，请直接手编，别在设置页里动它。
 
 ## 自动迁移是怎么工作的
 
@@ -92,19 +92,21 @@ npx @deepseek-ai/dsh plugin --profile web add dsh-subagent-library@latest
 - **设置页一键清除（推荐）**：子代理库卡片顶部会出现迁移横幅「N 个旧条目已导出为名册文件……」，点「清除旧条目」即可。该操作只删除**已被文件覆盖**的旧副本，名册文件不受影响；
 - **手动删除（按宿主版本）**：
   - **DSH ≤0.1.6**：编辑 `~/.dsh/settings.yaml`，删掉 `subagent-library.entries:` 整段（保留 `subagentProvider` / `entriesDir` 等插件级键）；
-  - **DSH ≥0.1.7**：旧段已被宿主导入 web profile 的 `cordis.patch.yml`——删掉其中 `id: subagent-library` 条目 `config` 下的 `entries:` 键（或整个条目），也可以用宿主自带配置编辑器操作。
+  - **DSH ≥0.1.7**：旧段已被宿主导入 web profile 的 `cordis.patch.yml`——删掉其中 `id: subagent-library` 条目 `config` 下的 `entries:` 键即可；**保留同一 `config` 行里的 `entriesDir` / `subagentProvider` 等其他键**，不要删除整个条目，也可以用宿主自带配置编辑器操作。
 
 > 不清理会怎样？——什么都不会坏。文件优先生效，旧段只是躺着（设置页会持续显示提示信息）。0.4 起插件停止读取旧段，届时再删也行。
 
 ## 回滚（想退回 0.2.x）
 
-直接安装旧版本即可：
+**前提：插件降级必须与宿主版本匹配。** 0.2.x 只兼容 DSH ≤0.1.6——在 DSH ≥0.1.7 的宿主上安装 0.2.8 会因旧设置 API 缺失而**整体 503**（正是 0.3.0 修复的故障）。因此回滚 = **同时降级插件与宿主**，且旧配置需从 `settings.yaml.imported` 手工恢复（该恢复路径未经验证，操作前自行核对）：
 
-```sh
-npx @deepseek-ai/dsh plugin --profile web add dsh-subagent-library@0.2.8
-```
+1. 降级宿主到 ≤0.1.6（数据格式不可降级的部分自行评估）；
+2. `npx @deepseek-ai/dsh plugin --profile web add dsh-subagent-library@0.2.8`；
+3. 从 `settings.yaml.imported` 找回 `subagent-library` 段，恢复为 `settings.yaml`（或 profile patch）中的活配置。
 
-0.2.x 只读 settings.yaml——只要你不曾删除旧 `entries` 段，回滚后名册原样可用（0.3 之后手编的名册文件它看不见；所以**清理旧段之前请想清楚是否还要回滚**）。旧副本就是回滚的数据源：手动编辑或删除旧副本（含删除条目、一键清除）会让回滚回到删除/编辑当时的旧快照——0.3 期间在名册文件里做的修改不会跟着回去。**DSH ≥0.1.7 的用户注意**：回滚前还需把 web profile `cordis.patch.yml` 里 `id: subagent-library` 条目的 `config` 恢复为升级前 settings.yaml 中的内容（该文件在宿主迁移时被改名 `settings.yaml.imported`，可从那里找回）。旧副本就是回滚的数据源：手动编辑或删除旧副本（含删除条目、一键清除）会让回滚回到删除/编辑当时的旧快照——0.3 期间在名册文件里做的修改不会跟着回去。
+若只是想退回「名册文件改回旧内容」，不必降级任何东西——直接编辑名册文件即可。
+
+0.2.x 只读 settings.yaml——只要你不曾删除旧 `entries` 段，回滚后名册原样可用（0.3 之后手编的名册文件它看不见）。旧副本就是回滚的数据源：手动编辑或删除旧副本（含删除条目、一键清除）会让回滚回到删除/编辑当时的旧快照——0.3 期间在名册文件里做的修改不会跟着回去。
 
 ## FAQ
 

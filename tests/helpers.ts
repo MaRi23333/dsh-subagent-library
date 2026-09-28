@@ -128,61 +128,80 @@ export function makeFormsSettings(
   }
 }
 
-export function makeSettings(options: SettingsOptions = {}): MockSettings {
-  let ns: unknown
-  let value: SectionLike = {}
-  let user: SectionLike | undefined = options.user
-  let revision = 0
-  const writable = options.writable ?? true
+/** THIS-DEPENDENT on purpose: the real SettingsProvider.describe() reads
+ *  instance state, so a DETACHED alias call (`const d = svc.describe; d()`)
+ *  throws — the plugin must always invoke it as a method with the receiver
+ *  intact (SUB-COMPAT-017-001: a detached call was swallowed by a try/catch
+ *  and falsely reported legacyCount=0 while clear-legacy claimed success). */
+class MockSettingsImpl implements MockSettings {
+  private regNs: unknown
+  private baseValue: SectionLike = {}
+  user?: SectionLike
+  private rev = 0
+  readonly writable: boolean
+  private readonly opts: SettingsOptions
 
-  const effective = (): SectionLike => ({
-    ...value,
-    ...(user ?? {}),
-    entries: user?.entries ?? value.entries ?? {},
-  })
-  const checkConflict = (expectedRevision?: number): void => {
-    if (expectedRevision !== undefined && expectedRevision !== revision) {
-      throw Object.assign(new Error(`settings conflict: expected revision ${expectedRevision}, current ${revision}`), {
-        code: 'SETTINGS_CONFLICT',
-      })
+  constructor(options: SettingsOptions) {
+    this.opts = options
+    this.writable = options.writable ?? true
+    this.user = options.user
+  }
+
+  private effective(): SectionLike {
+    return {
+      ...this.baseValue,
+      ...(this.user ?? {}),
+      entries: this.user?.entries ?? this.baseValue.entries ?? {},
     }
   }
 
-  return {
-    get writable() { return writable },
-    register(registeredNs, _schema, registerOptions) {
-      if (options.failRegister === true) {
-        throw new Error('SettingsError: subagent-library.entries.bad_key: description is required (fake stored-section failure)')
-      }
-      ns = registeredNs
-      if (registerOptions?.base !== undefined) value = registerOptions.base
-      return { get: () => effective(), watch: () => {} }
-    },
-    describe() {
-      return [{ ns, user, value, revision }]
-    },
-    replace(_ns, doc, expectedRevision) {
-      checkConflict(expectedRevision)
-      user = doc
-      revision += 1
-      return Promise.resolve()
-    },
-    mutate(_ns, ops, expectedRevision) {
-      checkConflict(expectedRevision)
-      const base = effective()
-      const next: SectionLike = { ...base, entries: { ...(base.entries ?? {}) } }
-      for (const op of ops) {
-        if (op.op === 'unset' && op.path[0] === 'entries' && typeof op.path[1] === 'string') {
-          delete next.entries?.[op.path[1]]
-        }
-      }
-      user = next
-      revision += 1
-      return Promise.resolve()
-    },
-    userSection: () => user,
-    revision: () => revision,
+  register(registeredNs: unknown, _schema: unknown, registerOptions?: { base?: SectionLike }): { get(): SectionLike; watch(): void } {
+    if (this.opts.failRegister === true) {
+      throw new Error('SettingsError: subagent-library.entries.bad_key: description is required (fake stored-section failure)')
+    }
+    this.regNs = registeredNs
+    if (registerOptions?.base !== undefined) this.baseValue = registerOptions.base
+    return { get: () => this.effective(), watch: () => {} }
   }
+
+  describe(): Array<{ ns: unknown; user: SectionLike | undefined; value: SectionLike; revision: number }> {
+    return [{ ns: this.regNs, user: this.user, value: this.baseValue, revision: this.rev }]
+  }
+
+  async replace(_ns: unknown, doc: SectionLike, expectedRevision?: number): Promise<void> {
+    if (expectedRevision !== undefined && expectedRevision !== this.rev) {
+      throw Object.assign(new Error(`settings conflict: expected revision ${expectedRevision}, current ${this.rev}`), { code: 'SETTINGS_CONFLICT' })
+    }
+    this.user = doc
+    this.rev += 1
+  }
+
+  async mutate(_ns: unknown, ops: Array<{ op: string; path: string[] }>, expectedRevision?: number): Promise<void> {
+    if (expectedRevision !== undefined && expectedRevision !== this.rev) {
+      throw Object.assign(new Error(`settings conflict: expected revision ${expectedRevision}, current ${this.rev}`), { code: 'SETTINGS_CONFLICT' })
+    }
+    const base = this.effective()
+    const next: SectionLike = { ...base, entries: { ...(base.entries ?? {}) } }
+    for (const op of ops) {
+      if (op.op === 'unset' && op.path[0] === 'entries' && typeof op.path[1] === 'string') {
+        delete next.entries?.[op.path[1]]
+      }
+    }
+    this.user = next
+    this.rev += 1
+  }
+
+  userSection(): SectionLike | undefined {
+    return this.user
+  }
+
+  currentRevision(): number {
+    return this.rev
+  }
+}
+
+export function makeSettings(options: SettingsOptions = {}): MockSettings {
+  return new MockSettingsImpl(options)
 }
 
 export interface HostOptions extends SettingsOptions {

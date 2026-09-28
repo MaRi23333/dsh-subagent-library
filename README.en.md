@@ -59,7 +59,10 @@ Since 0.3 the roster is a directory with **one file per named subagent** (hot-re
 
 > **Backup convention** — the plugin never auto-backs up. By convention, agents (or humans) copy the original file into `_backups/` before editing (suggested name `<id>.<yyyymmdd-hhmm>.yaml`). Anything `_`-prefixed is treated as non-roster content and silently ignored.
 
-`~/.dsh/settings.yaml` only keeps the plugin-level options:
+Where the plugin-level options live **depends on the host version**:
+
+- **DSH ≤0.1.6**: `~/.dsh/settings.yaml`;
+- **DSH ≥0.1.7**: the host migrated settings.yaml to `settings.yaml.imported` — the plugin-level options go into the **web profile's `cordis.patch.yml`** (under the `config` of the `- id: subagent-library` entry).
 
 ```yaml
 subagent-library:

@@ -378,6 +378,71 @@ test('.yml row with identical content still converges on save (no skip-deadlock)
   assert.ok(!diagnostics.some((item) => /相同 id/.test(item.message)))
 })
 
+// ── SUB-COMPAT-017-002: sweep failures are surfaced, never swallowed ────────
+
+/** Wrap the host FsPort's unlink so removing `pathSuffix` keeps failing until
+ *  `release()` is called (simulating a persistent Windows AV lock). */
+function withStuckUnlink(host: MockHost, pathSuffix: string): { release: () => void } {
+  const original = host.fs.unlink.bind(host.fs)
+  let stuck = true
+  const flaky = async (path: string): Promise<void> => {
+    if (stuck && path.replaceAll('\\', '/').endsWith(pathSuffix)) {
+      throw Object.assign(new Error('EPERM: file locked'), { code: 'EPERM' })
+    }
+    return original(path)
+  }
+  ;(host.fs as { unlink: typeof flaky }).unlink = flaky
+  return {
+    release() {
+      ;(host.fs as { unlink: typeof flaky }).unlink = original
+    },
+  }
+}
+
+test('convergence write failing under a persistent lock fails the save loudly (500)', async () => {
+  const host = makeHost({ rosterFiles: { '/roster/stuck.yml': 'description: same\n' } })
+  const lock = withStuckUnlink(host, 'stuck.yml')
+  const res = await postJson(host.web, { op: 'save', entries: { stuck: { description: 'same' } } })
+  assert.equal(res.status, 500)
+  assert.equal(jsonBody(res)['error'], 'write-failed')
+  // The canonical .yaml WAS written before the sweep failed — a dual-file
+  // state that loadRoster reports as a duplicate-id conflict (visible, never
+  // silent).
+  assert.ok(host.fs.files()['/roster/stuck.yaml'] !== undefined)
+  assert.ok(host.fs.files()['/roster/stuck.yml'] !== undefined)
+})
+
+test('after the fault clears, the next identical save converges via the skip path', async () => {
+  const host = makeHost({ rosterFiles: { '/roster/stuck.yml': 'description: same\n' } })
+  const lock = withStuckUnlink(host, 'stuck.yml')
+  await postJson(host.web, { op: 'save', entries: { stuck: { description: 'same' } } })
+  lock.release()
+  // Previous save left dual files; this retry finds the canonical .yaml row
+  // with identical content → skip path → sweep now succeeds → residue gone,
+  // no warning.
+  const res = await postJson(host.web, { op: 'save', entries: { stuck: { description: 'same' } } })
+  assert.equal(res.status, 200)
+  assert.equal(host.fs.files()['/roster/stuck.yml'], undefined)
+  const diagnostics = (jsonBody(res)['diagnostics'] ?? []) as Array<{ message: string }>
+  assert.ok(!diagnostics.some((item) => /残留清除失败/.test(item.message)))
+})
+
+test('a skip-path sweep failure surfaces as a warning while the save itself succeeds', async () => {
+  const host = makeHost({
+    rosterFiles: {
+      '/roster/stuck.yaml': 'description: same\n',
+      '/roster/stuck.yml': 'description: old residue\n',
+    },
+  })
+  const lock = withStuckUnlink(host, 'stuck.yml')
+  const res = await postJson(host.web, { op: 'save', entries: { stuck: { description: 'same' } } })
+  assert.equal(res.status, 200)
+  const diagnostics = (jsonBody(res)['diagnostics'] ?? []) as Array<{ severity: string, message: string }>
+  assert.ok(diagnostics.some((item) => item.severity === 'warning' && /残留清除失败/.test(item.message)), 'must not be silent')
+  assert.equal(host.fs.files()['/roster/stuck.yml'] !== undefined, true)
+  lock.release()
+})
+
 test('POST save skips byte-identical rows — untouched files keep hand-written comments', async () => {
   // Red team A1: a settings-page save used to rewrite EVERY file as generated
   // YAML, destroying hand-written comments in rows the user never opened.

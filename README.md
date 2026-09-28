@@ -66,7 +66,10 @@ DeepSeek Harness 的具名子代理库插件：把常用角色（代码审查、
 
 > **备份约定**：插件不做自动备份；按惯例，agent（或人）在修改条目前先把原文件复制进 `_backups/`（命名建议 `<id>.<yyyymmdd-hhmm>.yaml`）。`_` 前缀的文件/目录一律视为非名册内容，插件静默忽略。名册目录里可放一份 `README.md` 给操作该目录的 agent 立规矩。
 
-`~/.dsh/settings.yaml` 里只保留插件级配置：
+上面的插件级配置存放位置**随宿主版本不同**：
+
+- **DSH ≤0.1.6**：`~/.dsh/settings.yaml`；
+- **DSH ≥0.1.7**：宿主已把 settings.yaml 迁移为 `settings.yaml.imported`，插件级配置写在 **web profile 的 `cordis.patch.yml`**（`- id: subagent-library` 条目的 `config` 下）。
 
 ```yaml
 subagent-library:
