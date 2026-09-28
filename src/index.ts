@@ -36,8 +36,14 @@ import type { ContentBlock, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
 import { assertSubagentMaxDepth, settleRun } from '@deepseek-ai/dsh-subagent'
 import type { SubagentResult, SubagentRun, SubagentStartRequest } from '@deepseek-ai/dsh-subagent'
-import { settingsNamespace } from '@deepseek-ai/dsh-settings'
-import type { SettingsNamespace, SettingsProvider } from '@deepseek-ai/dsh-settings'
+// NOTE: `@deepseek-ai/dsh-settings` must NOT be value-imported here. DSH
+// 0.1.7 removed the settingsNamespace() VALUE export (type-only remains), and
+// a value import fails the whole module load → the entire plugin 503s
+// (SUB-ROSTER-YML-001 follow-up; docs/DSH-VERSIONS.md 0.1.7-rc.2). The
+// settings seam below detects the host generation structurally at runtime.
+// This type-only import exists for the cordis `ctx.settings` augmentation on
+// hosts where the type package still declares it — erased at runtime.
+import type {} from '@deepseek-ai/dsh-settings'
 import type { CommandResult } from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import {
@@ -225,29 +231,100 @@ export function apply(ctx: Context, config: Config) {
   // `installSettingsSection` is deliberately NOT used — in this harness build
   // its registration is dropped for bundle-loaded plugins. The inject callback
   // fires once the settings service finishes initializing.
-  let source: (() => Config) | undefined
-  let settingsService: SettingsProvider | undefined
-  let settingsNs: SettingsNamespace | undefined
-  /** Non-null when the settings seam could not register this namespace (e.g. a
-   *  hand-edited settings.yaml section fails the Config schema). Registration
-   *  failing inside a Cordis child fiber would otherwise leave the library
-   *  silently empty; surface the cause through every consumer instead. */
+  // ── settings seam (runtime dual-shape) ─────────────────────────────────────
+  // DSH 0.1.7 replaced the register()-based settings provider with the
+  // profile-backed `SettingsForms` service (config moved from settings.yaml
+  // into the profile's cordis.patch.yml) and removed the settingsNamespace()
+  // value export. Both host generations are detected structurally at runtime;
+  // the namespace is the profile entry id (`subagent-library`).
+  interface SettingsSeam {
+    /** Live config of this namespace; undefined = use apply()'s base config. */
+    readConfig(): Config | undefined
+    /** Legacy `entries` stored in the settings document (rollback copies). */
+    legacyUserEntries(): Record<string, Entry> | undefined
+    unsetEntries(ids: string[]): Promise<'done' | 'skipped-readonly' | 'no-settings'>
+    isWritable(): boolean
+  }
+  const SETTINGS_NS = 'subagent-library'
+  let settings: SettingsSeam | undefined
+  /** Non-null when the settings seam could not initialize (e.g. a hand-edited
+   *  stored section fails the Config schema on the legacy register path).
+   *  Failures surface through every consumer instead of leaving the library
+   *  silently degraded. */
   let settingsFailure: string | undefined
   ctx.inject(['settings'], (sctx: Context) => {
-    settingsService = sctx.settings
-    settingsNs = settingsNamespace('subagent-library')
-    try {
-      const scope = sctx.settings.register(settingsNs, Config, { base: config })
-      source = () => scope.get()
-      sctx.effect(() => () => {
-        source = () => config
-      })
-      scope.watch(() => {
-        // nothing derived is memoized — every operation re-reads the source.
-      })
-    } catch (error) {
-      settingsFailure = `subagent-library 设置段注册失败：${String(error)}。请检查 $DSH_HOME/settings.yaml 的 subagent-library 段（常见：description 缺失、entries 写成数组、YAML 布尔/字符串误写）。`
+    /** Structural view covering both host generations (type deps stay pinned
+     *  to 0.1.0-rc.6, so nothing here can rely on their static types). */
+    const svc = sctx.settings as unknown as {
+      register?(ns: unknown, schema: unknown, options?: { base?: Config }): { get(): Config }
+      describe?(): Array<{ ns: unknown; user?: unknown; value?: unknown; revision: number }>
+      mutate?(ns: string, ops: Array<{ op: string; path: ReadonlyArray<string> }>, expectedRevision?: number): Promise<void>
+      writable?: boolean
     }
+    if (typeof svc?.register === 'function') {
+      // ── DSH ≤0.1.6 — register() + live scope.get() ────────────────────────
+      try {
+        const scope = svc.register(SETTINGS_NS, Config, { base: config })
+        const legacyRaw = (): { entries?: Record<string, Entry> } | undefined => {
+          try {
+            const row = svc.describe?.().find((candidate) => String(candidate.ns) === SETTINGS_NS)
+            return (row?.user ?? undefined) as { entries?: Record<string, Entry> } | undefined
+          } catch {
+            return undefined
+          }
+        }
+        settings = {
+          readConfig: () => scope.get(),
+          legacyUserEntries: () => legacyRaw()?.entries,
+          unsetEntries: async (ids) => {
+            if (ids.length === 0) return 'done'
+            if (svc.writable === false) return 'skipped-readonly'
+            await svc.mutate!(SETTINGS_NS, ids.map((id) => ({ op: 'unset', path: ['entries', id] })))
+            return 'done'
+          },
+          isWritable: () => svc.writable !== false,
+        }
+      } catch (error) {
+        settingsFailure = `subagent-library 设置段注册失败：${String(error)}。请检查存储的 subagent-library 配置段（常见：description 缺失、entries 写成数组、YAML 布尔/字符串误写）。`
+      }
+      return
+    }
+    if (typeof svc?.describe === 'function' && typeof svc?.mutate === 'function') {
+      // ── DSH ≥0.1.7 — profile-backed SettingsForms ─────────────────────────
+      // The namespace is the profile entry id; a MISSING entry means "no
+      // overrides" and apply()'s base config serves. Reads degrade to the
+      // base config on a describe hiccup instead of failing the roster.
+      const describeRows = svc.describe
+      const mutateOps = svc.mutate
+      const findOurs = (): { value?: unknown; user?: unknown; revision: number } | undefined => {
+        try {
+          const rows = describeRows()
+          return rows.find((row) => String(row.ns) === SETTINGS_NS)
+            ?? rows.find((row) => typeof row.value === 'object' && row.value !== null
+              && Object.hasOwn(row.value as Record<string, unknown>, 'subagentProvider'))
+        } catch {
+          return undefined
+        }
+      }
+      settings = {
+        readConfig: () => findOurs()?.value as Config | undefined,
+        legacyUserEntries: () => {
+          const raw = (findOurs()?.user ?? undefined) as { entries?: Record<string, Entry> } | undefined
+          return raw?.entries
+        },
+        unsetEntries: async (ids) => {
+          if (ids.length === 0) return 'done'
+          const ours = findOurs()
+          if (ours === undefined) return 'no-settings'
+          if (svc.writable === false) return 'skipped-readonly'
+          await mutateOps(SETTINGS_NS, ids.map((id) => ({ op: 'unset', path: ['entries', id] })), ours.revision)
+          return 'done'
+        },
+        isWritable: () => svc.writable !== false,
+      }
+      return
+    }
+    settingsFailure = '宿主设置服务不可识别（缺少 register 与 describe）——名册文件功能不受影响，但旧条目兜底与清除不可用。'
   })
   /** Library entries restricted to schema-consistent ids: a hand-written key
    *  like `k3_reviewer` passes z.dict (any string key) but can never be
@@ -255,7 +332,7 @@ export function apply(ctx: Context, config: Config) {
   const filterEntries = (raw: Record<string, Entry> | undefined): Record<string, Entry> =>
     Object.fromEntries(Object.entries(raw ?? {}).filter(([id]) => ENTRY_ID.test(id)))
   const resolveConfig = (): Config => {
-    const base = source !== undefined ? source() : config
+    const base = settings?.readConfig() ?? config
     return { ...base, entries: filterEntries(base.entries) }
   }
 
@@ -391,12 +468,8 @@ export function apply(ctx: Context, config: Config) {
    *  one-click cleanup set for the 0.2→0.3 transition (a legacy row WITHOUT a
    *  file is still serving and must survive). */
   const legacyShadowedIds = (view: RosterView): string[] => {
-    const svc = settingsService
-    const ns = settingsNs
-    if (svc === undefined || ns === undefined) return []
-    const descriptor = svc.describe().find((row) => row.ns === ns)
-    const raw = (descriptor?.user as { entries?: unknown } | undefined)?.entries
-    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return []
+    const raw = settings?.legacyUserEntries()
+    if (raw === undefined) return []
     return Object.keys(raw).filter((id) => ENTRY_ID.test(id) && view.entries[id]?.source === 'file')
   }
 
@@ -425,12 +498,7 @@ export function apply(ctx: Context, config: Config) {
      *  instead of a silent false success (red team A7 / k3 #4). */
     const unsetLegacy = async (ids: string[]): Promise<'done' | 'skipped-readonly' | 'no-settings'> => {
       if (ids.length === 0) return 'done'
-      const svc = settingsService
-      const ns = settingsNs
-      if (svc === undefined || ns === undefined) return 'no-settings'
-      if (!svc.writable) return 'skipped-readonly'
-      await svc.mutate(ns, ids.map((id) => ({ op: 'unset', path: ['entries', id] })))
-      return 'done'
+      return settings?.unsetEntries(ids) ?? 'no-settings'
     }
     wctx.effect(() => web.register({
       kind: 'exact',
@@ -498,8 +566,7 @@ export function apply(ctx: Context, config: Config) {
             // legacy copies currently shadowed by a roster file. Legacy rows
             // without a file (failed export, hand-deleted file) keep serving
             // and are deliberately left alone.
-            const svc = settingsService
-            if (svc !== undefined && !svc.writable) {
+            if (settings !== undefined && !settings.isWritable()) {
               // A silent 200 here would be a false success (A7): the user
               // believes the rollback copies are gone when they are not.
               sendJson(res, 403, { ok: false, error: 'readonly', message: '设置服务只读，无法清除旧副本' })

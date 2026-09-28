@@ -56,6 +56,53 @@ export interface SettingsOptions {
   writable?: boolean
   /** Simulate a stored section that fails schema validation at register time. */
   failRegister?: boolean
+  /**
+   * `legacy` (default) = DSH ≤0.1.6 SettingsProvider with register();
+   * `forms` = DSH ≥0.1.7 profile-backed SettingsForms (describe/mutate).
+   */
+  settingsShape?: 'legacy' | 'forms'
+}
+
+/** DSH ≥0.1.7 SettingsForms double: profile entry `subagent-library` with the
+ *  legacy `entries` living in the user patch layer (post-import semantics). */
+export interface MockFormsSettings {
+  writable: boolean
+  describe: () => Array<{ ns: string; user?: unknown; value?: unknown; revision: number }>
+  mutate: (ns: string, ops: Array<{ op: string; path: ReadonlyArray<string> }>, expectedRevision?: number) => Promise<void>
+  /** Current user-patch entries (what unsetLegacy removes from). */
+  userEntries: () => Record<string, Entry>
+  revision: () => number
+}
+
+export function makeFormsSettings(options: SettingsOptions = {}, rosterDir: string): MockFormsSettings {
+  let revision = 41
+  const userEntries: Record<string, Entry> = {
+    ...((options.user?.entries ?? {}) as Record<string, Entry>),
+  }
+  const value: Record<string, unknown> = {
+    subagentProvider: 'spawn',
+    entriesDir: options.rosterDir ?? '/roster',
+    ...(options.baseEntries !== undefined ? { entries: options.baseEntries } : {}),
+  }
+  return {
+    writable: options.writable ?? true,
+    describe: () => [{
+      ns: 'subagent-library',
+      user: { entries: { ...userEntries } },
+      value: { ...value },
+      revision,
+    }],
+    async mutate(_ns, ops) {
+      for (const op of ops) {
+        if (op.op === 'unset' && op.path[0] === 'entries' && typeof op.path[1] === 'string') {
+          delete userEntries[op.path[1]]
+        }
+      }
+      revision += 1
+    },
+    userEntries: () => ({ ...userEntries }),
+    revision: () => revision,
+  }
 }
 
 export function makeSettings(options: SettingsOptions = {}): MockSettings {
@@ -146,6 +193,9 @@ export interface MockHost {
   toolViewScopes: unknown[]
   /** The in-memory FsPort the plugin was given (assert files written here). */
   fs: MemFs
+  /** DSH ≥0.1.7 SettingsForms double — populated and used when the host is
+   *  created with `settingsShape: 'forms'`. */
+  forms: MockFormsSettings
 }
 
 const enoent = (): Error => Object.assign(new Error('ENOENT (memfs)'), { code: 'ENOENT' })
@@ -226,6 +276,7 @@ export function makeHost(options: HostOptions = {}): MockHost {
   const toolViewScopes: MockHost['toolViewScopes'] = []
   let settingsCb: ((sctx: unknown) => void) | undefined
   const fs = makeMemFs(options.rosterFiles)
+  const forms = makeFormsSettings(options, options.rosterDir ?? '/roster')
 
   const providerNames = options.subagentProviders ?? []
   const providers = new Map(providerNames.map((providerName) => [providerName, {
@@ -289,9 +340,12 @@ export function makeHost(options: HostOptions = {}): MockHost {
     entriesDir: options.rosterDir ?? '/roster',
   })
   if (settingsCb === undefined) throw new Error('apply() did not register a settings inject callback')
-  settingsCb({ settings, effect: (fn: () => unknown) => fn() })
+  // 'forms' mimics DSH ≥0.1.7 (SettingsForms, no register()) — the plugin
+  // must detect the generation structurally and keep working.
+  const seam = options.settingsShape === 'forms' ? forms : settings
+  settingsCb({ settings: seam, effect: (fn: () => unknown) => fn() })
 
-  return { web, tools, settings, subagentStarts, toolViewScopes, fs }
+  return { web, tools, settings, forms, subagentStarts, toolViewScopes, fs }
 }
 
 export interface ReqOptions {

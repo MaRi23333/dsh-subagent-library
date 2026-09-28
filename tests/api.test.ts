@@ -316,6 +316,54 @@ test('POST clear-legacy with read-only settings fails loudly (403 readonly)', as
   assert.ok(host.fs.files()['/roster/alpha.yaml'] !== undefined)
 })
 
+// ── DSH ≥0.1.7 SettingsForms seam (profile entry id = `subagent-library`) ──
+
+test('SettingsForms host: GET reads the profile entry and serves the roster', async () => {
+  const host = makeHost({
+    settingsShape: 'forms',
+    user: { entries: { alpha: { ...ENTRY } } },
+    rosterFiles: { '/roster/alpha.yml': 'description: file copy\n' },
+  })
+  const res = await dispatch(host.web, API_PATH)
+  assert.equal(res.status, 200)
+  const body = jsonBody(res)
+  assert.equal(body['dir'], '/roster')
+  // alpha is served by the .yml file; the legacy settings copy is shadowed.
+  assert.equal((body['entries'] as Record<string, unknown>)['alpha'] !== undefined, true)
+  assert.equal(body['legacyCount'], 1)
+})
+
+test('SettingsForms host: clear-legacy unsets through mutate() with the live revision', async () => {
+  const host = makeHost({
+    settingsShape: 'forms',
+    user: { entries: { alpha: { ...ENTRY } } },
+    rosterFiles: { '/roster/alpha.yml': 'description: file copy\n' },
+  })
+  const res = await postJson(host.web, { op: 'clear-legacy' })
+  assert.equal(res.status, 200)
+  assert.equal(jsonBody(res)['legacyCount'], 0)
+  assert.deepEqual(host.forms.userEntries(), {}, 'legacy entries unset via SettingsForms.mutate')
+  assert.equal(host.forms.revision() > 41, true, 'mutate advanced the revision')
+  // The roster file keeps serving.
+  assert.equal((jsonBody(await dispatch(host.web, API_PATH))['entries'] as Record<string, unknown>)['alpha'] !== undefined, true)
+})
+
+test('SettingsForms host: read-only settings skips legacy unset with a warning diagnostic', async () => {
+  const host = makeHost({
+    settingsShape: 'forms',
+    writable: false,
+    user: { entries: { doomed: { ...ENTRY } } },
+    rosterFiles: { '/roster/doomed.yml': 'description: doomed\n' },
+  })
+  const res = await postJson(host.web, { op: 'delete', id: 'doomed' })
+  assert.equal(res.status, 200)
+  const body = jsonBody(res)
+  assert.deepEqual(Object.keys(body['entries'] as Record<string, unknown>), [])
+  const diagnostics = (body['diagnostics'] ?? []) as Array<{ severity: string, message: string }>
+  assert.ok(diagnostics.some((item) => item.severity === 'warning' && /旧副本/.test(item.message)), 'the resurrection risk must be surfaced')
+  assert.deepEqual(host.forms.userEntries()['doomed'] !== undefined, true, 'legacy copy untouched under read-only')
+})
+
 test('POST save skips byte-identical rows — untouched files keep hand-written comments', async () => {
   // Red team A1: a settings-page save used to rewrite EVERY file as generated
   // YAML, destroying hand-written comments in rows the user never opened.
