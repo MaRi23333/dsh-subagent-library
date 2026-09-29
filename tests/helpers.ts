@@ -63,8 +63,8 @@ export interface SettingsOptions {
   settingsShape?: 'legacy' | 'forms'
   /** When `forms`: the RAW patch layer omits schema-default keys
    * (`subagentProvider`) while retaining the explicitly-configured roster
-   * directory (`entriesDir`) — models platform group A where the raw patch
-   * carries `entries` plus the explicit directory (SUB-COMPAT-017-004
+   * directory (`entriesDir`) — models a raw patch that carries
+   * `entries` plus the explicit directory (SUB-COMPAT-017-004
    * regression: defaults and explicit values must survive reconcile + cleanup). */
   formsRawOmitsDefaults?: boolean
 }
