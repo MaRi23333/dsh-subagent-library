@@ -62,8 +62,10 @@ export interface SettingsOptions {
    */
   settingsShape?: 'legacy' | 'forms'
   /** When `forms`: the RAW patch layer omits schema-default keys
-   * (`subagentProvider`) — models the real host where ConfigEditor round-trips
-   * raw config without defaults (SUB-COMPAT-017-004 regression). */
+   * (`subagentProvider`) AND explicitly-configured keys (`entriesDir`) —
+   * models platform group A where the raw patch carries ONLY `entries`
+   * (SUB-COMPAT-017-004 regression: defaults and explicit values must
+   * survive reconcile + cleanup). */
   formsRawOmitsDefaults?: boolean
 }
 
@@ -107,6 +109,11 @@ export function makeFormsSettings(
       entries: { ...((configRef['entries'] ?? {}) as Record<string, Entry>) },
       entriesDir: rosterDir,
     }
+    // `formsRawOmitsDefaults` models the real host where the RAW patch layer
+    // carries no schema defaults (`subagentProvider`) — the exact shape that
+    // triggered SUB-COMPAT-017-004. (An "also omit entriesDir" variant would
+    // point the roster at the real home dir — left to a dedicated option if
+    // ever needed.)
     if (options.formsRawOmitsDefaults !== true) raw['subagentProvider'] = 'spawn'
     return raw
   }

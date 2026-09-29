@@ -16,6 +16,8 @@ This file documents user-facing changes. Format loosely follows [Keep a Changelo
   - Convergence failures now return HTTP 500 and may be partial; a failed `.yml` sweep on the canonical `.yaml` skip path returns 200 with a warning and can be retried after the fault clears.
 - 修复本次未发布适配候选引入的旧宿主（≤0.1.6）回归：`describe()` 恢复方法调用形态（detached 调用会因 `this` 丢失被吞错，导致 legacyCount 误报 0、清除假成功）。
   - Fixed a legacy-host regression introduced in this unreleased compatibility candidate: `describe()` retains its receiver, preventing swallowed errors, a false zero legacy count, and cleanup that reports success without removing legacy copies.
+- 修复 SUB-COMPAT-017-004：ConfigEditor 的 raw 配置不含 schema 默认值，整表 reconcile 会丢掉默认 provider（如 `spawn`），清除旧条目后委派报 "provider not registered"；现在 reconcile 按 schema 键宇宙恢复默认值（默认值只进活配置实例，绝不写回 raw patch），并在编辑完成后立即反射到当前实例。
+  - Fixed SUB-COMPAT-017-004: the raw ConfigEditor layer carries no schema defaults, so a wholesale reconcile dropped the default provider (delegation then failed with "provider not registered"); reconcile now restores schema defaults into the live instance only (never the raw patch) and reflects the result immediately after the edit.
 
 ### 文档 / Docs
 

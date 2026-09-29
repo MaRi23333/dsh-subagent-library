@@ -357,7 +357,11 @@ export function apply(ctx: Context, config: Config) {
         // (SUB-COMPAT-017-004 root cause).
         const keys = new Set([...Object.keys(defaults), ...Object.keys(target), ...Object.keys(next)])
         for (const key of keys) {
-          if (key in next) {
+          // Prototype-dangerous keys never enter the resolved config (raw
+          // JSON can carry an own `__proto__` key; plain assignment would hit
+          // the prototype setter).
+          if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue
+          if (Object.hasOwn(next, key)) {
             target[key] = next[key]
           } else if (defaults[key] !== undefined) {
             target[key] = defaults[key]

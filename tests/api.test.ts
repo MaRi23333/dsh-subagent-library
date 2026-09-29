@@ -276,6 +276,19 @@ test('readonly settings no longer block roster writes; legacy-only deletes just 
   assert.ok(host.fs.files()['/roster/new-entry.yaml'] !== undefined)
 })
 
+test('clean no-legacy host: deleting an unknown id is a no-op success (004 gate)', async () => {
+  // Platform gate: "从干净无 legacy 启动验证 no-op 删除" — no crash, no
+  // phantom entry, configEditor untouched.
+  const host = makeHost({ settingsShape: 'forms', formsRawOmitsDefaults: true, baseEntries: {} })
+  const before = jsonBody(await dispatch(host.web, API_PATH))
+  assert.equal(before['legacyCount'], 0)
+  const res = await postJson(host.web, { op: 'delete', id: 'ghost' })
+  assert.equal(res.status, 200)
+  const body = jsonBody(res)
+  assert.deepEqual(Object.keys(body['entries'] as Record<string, unknown>), [])
+  assert.equal(body['legacyCount'], 0)
+})
+
 test('delete answers exactly once and the readonly legacy warning survives to the client', async () => {
   // The delete branch used to fall through to the shared tail send, so the
   // warning-carrying response was immediately overwritten by a second bare
