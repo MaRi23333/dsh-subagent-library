@@ -333,7 +333,15 @@ export function apply(ctx: Context, config: Config) {
             schemaDefaultsCache = { subagentProvider: 'spawn', entries: {} }
           }
         }
-        return schemaDefaultsCache
+        // Fresh shallow copy per call (entries cloned too): applyReconciled
+        // writes these values into the live config — handing out the cached
+        // object by reference would let any future in-place write poison the
+        // defaults forever (GLM re-verification minor).
+        const cached = schemaDefaultsCache as unknown as Record<string, unknown>
+        return {
+          ...cached,
+          entries: { ...((cached['entries'] ?? {}) as Record<string, Entry>) },
+        } as Config
       }
       /** Reflect a reconciled RAW config into the apply()-closure, re-resolving
        *  schema defaults for keys the raw layer dropped. The Loader reconcile
