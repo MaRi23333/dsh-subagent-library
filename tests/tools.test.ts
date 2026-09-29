@@ -7,7 +7,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { makeHost, type MockHost } from './helpers.ts'
+import { API_PATH, jsonBody, makeHost, postJson, type MockHost } from './helpers.ts'
 
 interface RegisteredTool {
   execute: (args: Record<string, unknown>, exec: Record<string, unknown>) => Promise<unknown>
@@ -322,4 +322,29 @@ test('delegate omits agentOptions entirely when an entry sets no route overrides
   })
   await tool(host, 'delegate').execute({ library_id: 'plain', prompt: 'x' }, EXEC)
   assert.equal(Object.hasOwn(host.subagentStarts[0]?.request ?? {}, 'agentOptions'), false)
+})
+
+test('schema defaults survive clear-legacy + delete on a raw-patch host (SUB-COMPAT-017-004)', async () => {
+  // The 0.1.7 seam writes the ConfigEditor RAW layer back into the resolved
+  // closure. The raw layer has NO schema defaults: a wholesale overwrite used
+  // to drop `subagentProvider: 'spawn'`, and the next delegate failed with
+  // "provider not registered" (platform blocker SUB-COMPAT-017-004).
+  const host = makeHost({
+    settingsShape: 'forms',
+    formsRawOmitsDefaults: true,
+    subagentProviders: ['spawn'],
+    baseEntries: { alpha: { description: 'a' }, beta: { description: 'b' } },
+  })
+  const clear = await postJson(host.web, { op: 'clear-legacy' })
+  assert.equal(clear.status, 200)
+  const del = await postJson(host.web, { op: 'delete', id: 'alpha' })
+  assert.equal(del.status, 200)
+
+  // The resolved closure must still know the default transport…
+  assert.equal(host.applyConfig['subagentProvider'], 'spawn')
+  // …and delegation keeps working through it.
+  await tool(host, 'delegate').execute({ library_id: 'beta', prompt: 'x' }, EXEC)
+  assert.equal(host.subagentStarts.length, 1)
+  assert.equal(host.subagentStarts[0]?.provider, 'spawn')
+  assert.equal(host.applyConfig['entriesDir'], '/roster', 'an explicitly configured entriesDir must also survive')
 })

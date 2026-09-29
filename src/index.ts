@@ -316,16 +316,47 @@ export function apply(ctx: Context, config: Config) {
       //                       red team major #2)
       //   legacy read/unset = profile patch via ctx.configEditor, whose
       //                       inject is bound separately below (0.1.7+ only).
-      /** Reflect a reconciled config into the apply()-closure immediately:
-       *  the Loader reconcile may restart this plugin asynchronously, but the
-       *  in-flight HTTP response must not report a stale legacyCount
-       *  (red team re-verification minor #3). */
-      const applyConfigPatch = (next: Record<string, unknown>): void => {
-        const target = config as unknown as Record<string, unknown>
-        for (const key of Object.keys(target)) {
-          if (!(key in next)) delete target[key]
+      /** Resolved schema defaults, computed once. Used to RESTORE effective
+       *  defaults in the apply()-closure when a raw patch `next` drops keys —
+       *  the ConfigEditor raw layer does NOT carry schema defaults
+       *  (e.g. `subagentProvider: 'spawn'`), and a wholesale overwrite of the
+       *  resolved config with raw values silently removed them, breaking
+       *  delegation with "provider not registered"
+       *  (SUB-COMPAT-017-004). Defaults are restored in the closure ONLY —
+       *  never written back into the raw patch. */
+      let schemaDefaultsCache: Config | undefined
+      const schemaDefaults = (): Config => {
+        if (schemaDefaultsCache === undefined) {
+          try {
+            schemaDefaultsCache = Config({} as never) as Config
+          } catch {
+            schemaDefaultsCache = { subagentProvider: 'spawn', entries: {} }
+          }
         }
-        Object.assign(target, next)
+        return schemaDefaultsCache
+      }
+      /** Reflect a reconciled RAW config into the apply()-closure, re-resolving
+       *  schema defaults for keys the raw layer dropped. The Loader reconcile
+       *  may restart this plugin asynchronously, but the in-flight HTTP
+       *  response and later reads must not lose defaults in the meantime. */
+      const applyReconciled = (next: Record<string, unknown>): void => {
+        const target = config as unknown as Record<string, unknown>
+        const defaults = schemaDefaults() as unknown as Record<string, unknown>
+        // The key universe MUST include the SCHEMA keys: a schema-declared key
+        // that is absent from BOTH the raw patch and the resolved closure
+        // (already reconciled away) still needs its default re-applied —
+        // iterating only target ∪ next silently skips exactly that case
+        // (SUB-COMPAT-017-004 root cause).
+        const keys = new Set([...Object.keys(defaults), ...Object.keys(target), ...Object.keys(next)])
+        for (const key of keys) {
+          if (key in next) {
+            target[key] = next[key]
+          } else if (defaults[key] !== undefined) {
+            target[key] = defaults[key]
+          } else if (key in target) {
+            delete target[key]
+          }
+        }
       }
       settings = {
         readConfig: () => config,
@@ -365,7 +396,7 @@ export function apply(ctx: Context, config: Config) {
             applied = next
             return next
           })
-          if (applied !== undefined) applyConfigPatch(applied)
+          if (applied !== undefined) applyReconciled(applied)
           return 'done'
         },
         isWritable: () => svc.writable !== false,

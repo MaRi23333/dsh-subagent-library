@@ -61,6 +61,10 @@ export interface SettingsOptions {
    * `forms` = DSH ≥0.1.7 profile-backed SettingsForms (describe/mutate).
    */
   settingsShape?: 'legacy' | 'forms'
+  /** When `forms`: the RAW patch layer omits schema-default keys
+   * (`subagentProvider`) — models the real host where ConfigEditor round-trips
+   * raw config without defaults (SUB-COMPAT-017-004 regression). */
+  formsRawOmitsDefaults?: boolean
 }
 
 /** DSH ≥0.1.7 double: SettingsForms (writable flag only — the plugin must NOT
@@ -96,12 +100,16 @@ export function makeFormsSettings(
   // SINGLE source of truth = configRef (the plugin's own closure): current()
   // and userEntries() MUST read the same store, or the change() callback sees
   // a pre-edit snapshot forever (k3 audit: dual data sources masked the
-  // options.id blocker).
-  const current = (): Record<string, unknown> => ({
-    subagentProvider: 'spawn',
-    entriesDir: rosterDir,
-    entries: { ...((configRef['entries'] ?? {}) as Record<string, Entry>) },
-  })
+  // options.id blocker). `formsRawOmitsDefaults` models the real host where
+  // the RAW patch layer carries no schema defaults.
+  const current = (): Record<string, unknown> => {
+    const raw: Record<string, unknown> = {
+      entries: { ...((configRef['entries'] ?? {}) as Record<string, Entry>) },
+      entriesDir: rosterDir,
+    }
+    if (options.formsRawOmitsDefaults !== true) raw['subagentProvider'] = 'spawn'
+    return raw
+  }
   return {
     writable: options.writable ?? true,
     configEditor: {
@@ -238,6 +246,9 @@ export interface MockHost {
   /** DSH ≥0.1.7 SettingsForms double — populated and used when the host is
    *  created with `settingsShape: 'forms'`. */
   forms: MockFormsSettings
+  /** The exact object handed to apply() as config — the plugin mutates it in
+   *  place on ≥0.1.7 reconcile; tests assert schema defaults survived. */
+  applyConfig: Config
 }
 
 const enoent = (): Error => Object.assign(new Error('ENOENT (memfs)'), { code: 'ENOENT' })
@@ -394,7 +405,7 @@ export function makeHost(options: HostOptions = {}): MockHost {
     : { settings, effect: (fn: () => unknown) => fn() }
   for (const cb of settingsCbs) cb(sctxFor)
 
-  return { web, tools, settings, forms, subagentStarts, toolViewScopes, fs }
+  return { web, tools, settings, forms, applyConfig, subagentStarts, toolViewScopes, fs }
 }
 
 export interface ReqOptions {
