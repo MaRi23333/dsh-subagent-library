@@ -277,8 +277,8 @@ test('readonly settings no longer block roster writes; legacy-only deletes just 
 })
 
 test('clean no-legacy host: deleting an unknown id is a no-op success (004 gate)', async () => {
-  // Platform gate: "从干净无 legacy 启动验证 no-op 删除" — no crash, no
-  // phantom entry, configEditor untouched.
+  // Platform gate: "从干净无 legacy 启动验证 no-op 删除" — verify a
+  // successful response with no phantom entry and no legacy rows reported.
   const host = makeHost({ settingsShape: 'forms', formsRawOmitsDefaults: true, baseEntries: {} })
   const before = jsonBody(await dispatch(host.web, API_PATH))
   assert.equal(before['legacyCount'], 0)

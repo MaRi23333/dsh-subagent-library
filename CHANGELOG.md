@@ -4,20 +4,20 @@
 
 This file documents user-facing changes. Format loosely follows [Keep a Changelog]; versions follow [SemVer].
 
-## [0.3.1] — 未发布（DSH 0.1.7-rc.2 适配候选）
+## [0.3.1] — 2026-09-29（DSH 0.1.7-rc.2 适配）
 
 ### 修复 / Fixed
 
-- **适配 DSH 0.1.7-rc.2**：0.3.0 的旧设置 seam 在新宿主上调用不存在的 `register()`，因此插件启动失败并返回整体 503；这不是由 bundle 中的 `settingsNamespace` 命名导入直接造成的。候选版现在**运行时结构探测两代宿主**：≤0.1.6 走原 `register()` 通道；≥0.1.7 直接使用 Loader 活配置，旧条目兜底的清除改经官方 `ctx.configEditor` 通道。名册文件（`~/.dsh/subagents/*.yaml`）在两代宿主上行为一致。
-  - Adapts to DSH 0.1.7-rc.2: 0.3.0's legacy settings seam called `register()`, which the new host does not provide, so startup failed with an overall 503; the direct cause was not a named `settingsNamespace` import from the bundle. The candidate now detects the host generation at runtime: ≤0.1.6 keeps the `register()` channel; ≥0.1.7 uses the Loader live config plus the official `ctx.configEditor` for legacy cleanup. Roster files behave identically on both.
+- **适配 DSH 0.1.7-rc.2**：0.3.0 的旧设置 seam 在新宿主上调用不存在的 `register()`，因此插件启动失败并返回整体 503；这不是由 bundle 中的 `settingsNamespace` 命名导入直接造成的。插件现在**运行时结构探测两代宿主**：≤0.1.6 走原 `register()` 通道；≥0.1.7 直接使用 Loader 活配置，旧条目兜底的清除改经官方 `ctx.configEditor` 通道。名册文件（`~/.dsh/subagents/*.yaml`）在两代宿主上行为一致。
+  - Adapts to DSH 0.1.7-rc.2: 0.3.0's legacy settings seam called `register()`, which the new host does not provide, so startup failed with an overall 503; the direct cause was not a named `settingsNamespace` import from the bundle. The plugin now detects the host generation at runtime: ≤0.1.6 keeps the `register()` channel; ≥0.1.7 uses the Loader live config plus the official `ctx.configEditor` for legacy cleanup. Roster files behave identically on both.
 - `.yml` 条目收敛死锁修复：内容未变的 `.yml` 条目此前会因跳过写入而永远保持双文件冲突；现在非规范后缀行即使内容未变也会收敛为 `.yaml`，原 `.yml` 的手写注释会丢失。
   - Fixed a convergence deadlock for unchanged `.yml` rows: they now converge to generated `.yaml` even when their content is unchanged, losing hand-written comments from the `.yml` file.
 - 收敛写入失败现在明确返回 HTTP 500（可能已经部分完成）；规范 `.yaml` 的跳过路径若残留 `.yml` 清扫失败，则返回 200 并带 warning，故障解除后可重试收敛。
   - Convergence failures now return HTTP 500 and may be partial; a failed `.yml` sweep on the canonical `.yaml` skip path returns 200 with a warning and can be retried after the fault clears.
 - 修复本次未发布适配候选引入的旧宿主（≤0.1.6）回归：`describe()` 恢复方法调用形态（detached 调用会因 `this` 丢失被吞错，导致 legacyCount 误报 0、清除假成功）。
   - Fixed a legacy-host regression introduced in this unreleased compatibility candidate: `describe()` retains its receiver, preventing swallowed errors, a false zero legacy count, and cleanup that reports success without removing legacy copies.
-- 修复 SUB-COMPAT-017-004：ConfigEditor 的 raw 配置不含 schema 默认值，整表 reconcile 会丢掉默认 provider（如 `spawn`），清除旧条目后委派报 "provider not registered"；现在 reconcile 按 schema 键宇宙恢复默认值（默认值只进活配置实例，绝不写回 raw patch），并在编辑完成后立即反射到当前实例。
-  - Fixed SUB-COMPAT-017-004: the raw ConfigEditor layer carries no schema defaults, so a wholesale reconcile dropped the default provider (delegation then failed with "provider not registered"); reconcile now restores schema defaults into the live instance only (never the raw patch) and reflects the result immediately after the edit.
+- 修复本次未发布适配候选中暴露的 SUB-COMPAT-017-004：ConfigEditor 的 raw 配置不含 schema 默认值，整表 reconcile 会丢掉默认 provider（如 `spawn`），清除旧条目后委派报 "provider not registered"；现在 reconcile 按配置定义的字段恢复默认值（默认值只进活配置实例，绝不写回 raw patch），并在编辑完成后立即反射到当前实例。
+  - Fixed SUB-COMPAT-017-004 exposed by this unreleased compatibility candidate: the raw ConfigEditor layer carries no schema defaults, so a wholesale reconcile dropped the default provider (delegation then failed with "provider not registered"); reconcile now restores defaults for the fields defined by the configuration into the live instance only (never the raw patch) and reflects the result immediately after the edit.
 
 ### 文档 / Docs
 
