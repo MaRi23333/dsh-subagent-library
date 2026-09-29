@@ -25,7 +25,7 @@ Adding entries needs no hand-written config either: ask the main agent to do it,
 
 > Distinction from the official capabilities: the official `subagent` tool dispatches ad-hoc tasks (you describe the task each time), and the official `list_agents` lists *running* child instances; this plugin maintains a **persistent named roster** (edited visually in a settings page, hot-reloaded). The model picks an entry with `list_subagents` and dispatches by id with `delegate`.
 
-> **Upgrading from 0.2.x?** Since 0.3 the roster is directory-backed (one YAML file per subagent). Your legacy config **migrates automatically**, and the old settings.yaml section can be cleared with one click — zero manual steps. See [MIGRATION.md](./MIGRATION.md) for the detailed guide and [CHANGELOG.md](./CHANGELOG.md) for all changes.
+> **Upgrading from 0.2.x?** Since 0.3 the roster is directory-backed (one YAML file per subagent). Your legacy config **migrates automatically**; after verifying it, clear the old `entries` section for your host generation. [MIGRATION.md](./MIGRATION.md) documents the config locations, failure/retry behavior, and rollback limits; [CHANGELOG.md](./CHANGELOG.md) lists all changes.
 
 ## Screenshots
 
@@ -59,17 +59,27 @@ Since 0.3 the roster is a directory with **one file per named subagent** (hot-re
 
 > **Backup convention** — the plugin never auto-backs up. By convention, agents (or humans) copy the original file into `_backups/` before editing (suggested name `<id>.<yyyymmdd-hhmm>.yaml`). Anything `_`-prefixed is treated as non-roster content and silently ignored.
 
-Where the plugin-level options live **depends on the host version**:
+Where the plugin-level options live **depends on the host version**. Use one of these two shapes:
 
-- **DSH ≤0.1.6**: `~/.dsh/settings.yaml`;
-- **DSH ≥0.1.7**: the host migrated settings.yaml to `settings.yaml.imported` — the plugin-level options go into the **web profile's `cordis.patch.yml`** (under the `config` of the `- id: subagent-library` entry).
+**DSH ≤0.1.6:** edit `~/.dsh/settings.yaml`.
 
 ```yaml
 subagent-library:
-  # Roster directory; default ~/.dsh/subagents, supports ~ and paths relative to ~/.dsh
   entriesDir: ~/.dsh/subagents
-  # entries: (optional, legacy) the 0.2.x inline roster is still read as a
-  # read-only fallback throughout 0.3.x — files win; removal planned for 0.4
+  subagentProvider: spawn
+  # entries: (optional, legacy) the 0.2.x inline roster remains a read-only
+  # fallback throughout 0.3.x — files win; removal planned for 0.4
+```
+
+**DSH ≥0.1.7:** edit the web profile's `cordis.patch.yml`, under `config` on its `- id: subagent-library` entry.
+
+```yaml
+- id: subagent-library
+  config:
+    entriesDir: ~/.dsh/subagents
+    subagentProvider: spawn
+    # entries: (optional, legacy) the 0.2.x inline roster remains a read-only
+    # fallback throughout 0.3.x — files win; removal planned for 0.4
 ```
 
 One entry file (`k3-reviewer.yaml`):
@@ -105,7 +115,9 @@ Entry fields:
 
 **Broken files never brick the roster**: files that fail to parse or validate are skipped, and the reason is surfaced as diagnostics in `list_subagents`, the `/subagent` command, and the settings page; `.yaml`/`.yml` duplicate ids and wrongly-cased file names are reported the same way.
 
-**Migrating from 0.2.x**: on first roster use, the existing `entries` in settings.yaml are exported **entry by entry** to `<id>.yaml` (ids with an existing file are skipped — hand-written files are never overwritten); the legacy settings copies are KEPT as a rollback (downgrading the plugin keeps working), and files take precedence. Once confirmed, delete the legacy `entries` section from settings yourself (reading it is removed in 0.4).
+**Migrating from 0.2.x**: on first roster use, the old `entries` section is exported **entry by entry** to `<id>.yaml` (ids with an existing file are skipped — hand-written files are never overwritten); legacy copies are KEPT as a rollback, and files take precedence. When saving through the settings page, an unchanged canonical `.yaml` row is skipped so its hand-written comments stay intact; an unchanged `.yml` row is still rewritten as generated `.yaml` and loses its comments. A write/convergence failure returns HTTP 500 and may leave a partial result. If the canonical `.yaml` skip path cannot sweep a same-id `.yml`, the save returns 200 with a warning and the duplicate diagnostic remains until a retry succeeds. Once confirmed, clear only the legacy `entries` key and keep the other keys on that same config row (reading is removed in 0.4).
+
+The 0.2.8 legacy `entries` fallback is for DSH ≤0.1.6 only; on DSH ≥0.1.7 the plugin cannot be downgraded by itself. Host downgrade and restoration of `settings.yaml.imported` data are unverified, so no downgrade sequence is prescribed. To restore roster content, use your own `_backups/` copies and verify them manually.
 
 > Mind the two provider concepts: `provider` is the LLM route (`agentOptions.provider`),
 > while `subagentProvider` is the subagent transport (`ctx.subagents` registration name, e.g. `spawn`/`fork`/`acp`).

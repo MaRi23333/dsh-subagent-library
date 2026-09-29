@@ -32,7 +32,7 @@ DeepSeek Harness 的具名子代理库插件：把常用角色（代码审查、
 
 > 与官方能力的区分：官方 `subagent` 工具是临时派活（每次现场描述任务），官方 `list_agents` 列的是正在运行的子代实例；本插件维护的是**持久化的具名角色名册**（设置页可视化编辑、热生效），模型用 `list_subagents` 选人、`delegate` 按 id 派活。
 
-> **从 0.2.x 升级？** 0.3 起名册目录化（一个子代理一个 YAML 文件），旧配置**自动迁移**、settings.yaml 旧段可一键清除，零手工步骤——详细过渡指南见 [MIGRATION.md](./MIGRATION.md)，完整变更见 [CHANGELOG.md](./CHANGELOG.md)。
+> **从 0.2.x 升级？** 0.3 起名册目录化（一个子代理一个 YAML 文件），旧配置**自动迁移**；确认无误后可按宿主版本清除旧 `entries` 段。配置位置、失败重试和回滚边界见 [MIGRATION.md](./MIGRATION.md)，完整变更见 [CHANGELOG.md](./CHANGELOG.md)。
 
 ## 界面
 
@@ -66,16 +66,25 @@ DeepSeek Harness 的具名子代理库插件：把常用角色（代码审查、
 
 > **备份约定**：插件不做自动备份；按惯例，agent（或人）在修改条目前先把原文件复制进 `_backups/`（命名建议 `<id>.<yyyymmdd-hhmm>.yaml`）。`_` 前缀的文件/目录一律视为非名册内容，插件静默忽略。名册目录里可放一份 `README.md` 给操作该目录的 agent 立规矩。
 
-上面的插件级配置存放位置**随宿主版本不同**：
+上面的插件级配置存放位置**随宿主版本不同**。两种正确的配置形状如下：
 
-- **DSH ≤0.1.6**：`~/.dsh/settings.yaml`；
-- **DSH ≥0.1.7**：宿主已把 settings.yaml 迁移为 `settings.yaml.imported`，插件级配置写在 **web profile 的 `cordis.patch.yml`**（`- id: subagent-library` 条目的 `config` 下）。
+**DSH ≤0.1.6：**编辑 `~/.dsh/settings.yaml`。
 
 ```yaml
 subagent-library:
-  # 名册目录；默认 ~/.dsh/subagents，支持 ~ 与相对路径（相对 ~/.dsh）
   entriesDir: ~/.dsh/subagents
+  subagentProvider: spawn
   # entries:（可选，遗留）0.2.x 的内联名册在 0.3.x 仍只读兜底，文件优先生效；0.4 移除
+```
+
+**DSH ≥0.1.7：**编辑 web profile 的 `cordis.patch.yml`，在 `- id: subagent-library` 的 `config` 下配置。
+
+```yaml
+- id: subagent-library
+  config:
+    entriesDir: ~/.dsh/subagents
+    subagentProvider: spawn
+    # entries:（可选，遗留）0.2.x 的内联名册在 0.3.x 仍只读兜底，文件优先生效；0.4 移除
 ```
 
 单个条目文件（`k3-reviewer.yaml`）：
@@ -111,7 +120,9 @@ backgroundMode: continuable
 
 **坏文件不炸名册**：解析/校验失败的文件被跳过，错误进入 `list_subagents` 输出、`/subagent` 命令与设置页的 diagnostics；`.yaml`/`.yml` 同名冲突、大写文件名等也会以诊断形式报出。
 
-**从 0.2.x 迁移**：首次使用名册时，settings.yaml 里已有的 `entries` 会**逐条**导出为 `<id>.yaml`（已存在同名文件的条目跳过，绝不覆盖手写文件）；settings 里的旧条目保留作回滚副本（降级插件时仍可用），文件优先生效。确认无误后可自行删除 settings 中的旧 `entries` 段（0.4 将停止读取）。
+**从 0.2.x 迁移**：首次使用名册时，旧配置里的 `entries` 会**逐条**导出为 `<id>.yaml`（已存在同名文件的条目跳过，绝不覆盖手写文件）；旧条目保留作回滚副本，文件优先生效。通过设置页保存时，规范 `.yaml` 内容未变时会跳过写入并保留手写注释；`.yml` 内容即使未变也会重写为生成的 `.yaml` 并移除 `.yml`，原注释会丢失。写入或收敛失败返回 HTTP 500，可能已有部分文件完成；规范 `.yaml` 的跳过路径若清扫同名 `.yml` 失败则返回 200 并带 warning，冲突诊断会持续到下次重试成功。确认无误后按宿主版本清除旧 `entries` 段（0.4 将停止读取）。
+
+清理时只删除 `entries` 键：旧宿主保留同一 `subagent-library` 行的 `subagentProvider` / `entriesDir` 等其他键；新宿主保留同一 `config` 行的这些键，不要删除整个配置条目。0.2.8 的旧 `entries` 回滚副本只适用于 DSH ≤0.1.6；在 DSH ≥0.1.7 上不能单独降级插件。宿主降级和 `settings.yaml.imported` 数据恢复均未验证；如果需要恢复 0.3 名册内容，请从你自己建立的名册 `_backups/` 备份恢复并自行核对。
 
 > 注意区分两个 provider 概念：`provider` 指 LLM 路由（`agentOptions.provider`），
 > `subagentProvider` 指子代理传输层（`ctx.subagents` 注册名，如 `spawn`/`fork`/`acp`）。

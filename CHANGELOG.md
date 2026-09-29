@@ -8,17 +8,19 @@ This file documents user-facing changes. Format loosely follows [Keep a Changelo
 
 ### 修复 / Fixed
 
-- **适配 DSH 0.1.7-rc.2**：上游重做了设置存储（settings.yaml → profile 配置）并移除了 `settingsNamespace()` 运行时导出，0.3.0 在 0.1.7-rc.2 宿主上整体 503。插件现在**运行时结构探测两代宿主**：≤0.1.6 走原 `register()` 通道；≥0.1.7 直接使用 Loader 活配置，旧条目兜底的清除改经官方 `ctx.configEditor` 通道。名册文件（`~/.dsh/subagents/*.yaml`）在两代宿主上行为一致。
-  - Adapts to DSH 0.1.7-rc.2 (503 on startup). The plugin now detects the host generation at runtime: ≤0.1.6 keeps the `register()` channel; ≥0.1.7 uses the Loader live config plus the official `ctx.configEditor` for legacy cleanup. Roster files behave identically on both.
-- `.yml` 条目收敛死锁修复：内容未变的 `.yml` 条目此前会因跳过写入而永远保持双文件冲突；现在非规范后缀行即使内容未变也会收敛为 `.yaml`，且同 id `.yml` 残留清理失败会以**警告诊断**出现在保存响应中（不再静默）。
-  - Fixed a convergence deadlock for unchanged `.yml` rows; sweep failures now surface as response warnings instead of being swallowed.
-- 旧宿主（≤0.1.6）路径：`describe()` 恢复方法调用形态（此前 detached 调用会因 `this` 丢失被吞错，导致 legacyCount 误报 0、清除假成功）。
-  - Legacy path: `describe()` is invoked with its receiver again (a detached alias was swallowed and falsely reported zero legacy copies).
+- **适配 DSH 0.1.7-rc.2**：0.3.0 的旧设置 seam 在新宿主上调用不存在的 `register()`，因此插件启动失败并返回整体 503；这不是由 bundle 中的 `settingsNamespace` 命名导入直接造成的。候选版现在**运行时结构探测两代宿主**：≤0.1.6 走原 `register()` 通道；≥0.1.7 直接使用 Loader 活配置，旧条目兜底的清除改经官方 `ctx.configEditor` 通道。名册文件（`~/.dsh/subagents/*.yaml`）在两代宿主上行为一致。
+  - Adapts to DSH 0.1.7-rc.2: 0.3.0's legacy settings seam called `register()`, which the new host does not provide, so startup failed with an overall 503; the direct cause was not a named `settingsNamespace` import from the bundle. The candidate now detects the host generation at runtime: ≤0.1.6 keeps the `register()` channel; ≥0.1.7 uses the Loader live config plus the official `ctx.configEditor` for legacy cleanup. Roster files behave identically on both.
+- `.yml` 条目收敛死锁修复：内容未变的 `.yml` 条目此前会因跳过写入而永远保持双文件冲突；现在非规范后缀行即使内容未变也会收敛为 `.yaml`，原 `.yml` 的手写注释会丢失。
+  - Fixed a convergence deadlock for unchanged `.yml` rows: they now converge to generated `.yaml` even when their content is unchanged, losing hand-written comments from the `.yml` file.
+- 收敛写入失败现在明确返回 HTTP 500（可能已经部分完成）；规范 `.yaml` 的跳过路径若残留 `.yml` 清扫失败，则返回 200 并带 warning，故障解除后可重试收敛。
+  - Convergence failures now return HTTP 500 and may be partial; a failed `.yml` sweep on the canonical `.yaml` skip path returns 200 with a warning and can be retried after the fault clears.
+- 修复本次未发布适配候选引入的旧宿主（≤0.1.6）回归：`describe()` 恢复方法调用形态（detached 调用会因 `this` 丢失被吞错，导致 legacyCount 误报 0、清除假成功）。
+  - Fixed a legacy-host regression introduced in this unreleased compatibility candidate: `describe()` retains its receiver, preventing swallowed errors, a false zero legacy count, and cleanup that reports success without removing legacy copies.
 
 ### 文档 / Docs
 
-- 配置位置与回滚说明按宿主版本分述（≥0.1.7 的插件级配置在 profile `cordis.patch.yml`；回滚需插件与宿主同时降级，`settings.yaml.imported` 恢复路径未经验证）。
-  - Config-location and rollback docs now distinguish host versions; plugin-only downgrade on a ≥0.1.7 host is documented as NOT a safe rollback.
+- 配置位置与回滚说明按宿主版本分述（≥0.1.7 的插件级配置在 profile `cordis.patch.yml`；0.2.8 仅适用于旧宿主，宿主降级及 `settings.yaml.imported` 恢复路径未经验证，不提供降级操作步骤）。
+  - Config-location and rollback docs now distinguish host versions: 0.2.8 requires an older host; host downgrade and `settings.yaml.imported` restoration are unverified, so no downgrade sequence is prescribed.
 
 ## [0.3.0] — 2026-09-24
 

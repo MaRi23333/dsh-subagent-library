@@ -195,7 +195,7 @@ class MockSettingsImpl implements MockSettings {
     return this.user
   }
 
-  currentRevision(): number {
+  revision(): number {
     return this.rev
   }
 }
