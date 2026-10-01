@@ -38,7 +38,7 @@ DeepSeek Harness 的具名子代理库插件：把常用角色（代码审查、
 
 <p align="center">
   <img src="./assets/readme/screenshot-settings.png" width="75%" alt="设置页「子代理库」卡片：可视化编辑名册条目" /><br>
-  <em>设置页「子代理库」卡片：可视化增删改条目（模型 / 传输层 / 深度 / 禁用工具 / persona）</em>
+  <em>设置页「子代理库」卡片：可视化增删改与启停，配置模型、传输层、输出上限、深度、禁用工具、思考强度、后台模式和角色提示词。</em>
 </p>
 
 <p align="center">

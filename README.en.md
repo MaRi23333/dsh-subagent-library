@@ -31,7 +31,7 @@ Adding entries needs no hand-written config either: ask the main agent to do it,
 
 <p align="center">
   <img src="./assets/readme/screenshot-settings.png" width="75%" alt="Subagent Library settings card: edit roster entries visually" /><br>
-  <em>The Subagent Library settings card: add/edit/remove entries visually (model / transport / depth / denied tools / persona)</em>
+  <em>The Subagent Library settings card: visually add, edit, remove, enable or disable entries; configure the model, transport, output limit, depth, denied tools, reasoning effort, background mode and persona.</em>
 </p>
 
 <p align="center">
