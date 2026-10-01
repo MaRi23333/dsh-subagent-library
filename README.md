@@ -9,7 +9,7 @@
 <p align="center">
   <img src="https://img.shields.io/github/actions/workflow/status/MaRi23333/dsh-subagent-library/ci.yml?style=flat-square&label=CI" alt="CI" />
   <img src="https://img.shields.io/github/license/MaRi23333/dsh-subagent-library?style=flat-square" alt="License: MIT" />
-  <img src="https://img.shields.io/badge/DeepSeek%20Harness-0.1.2--rc.1-4d6bfe?style=flat-square" alt="DeepSeek Harness 0.1.2-rc.1" />
+  <img src="https://img.shields.io/badge/DeepSeek%20Harness-0.2.0--rc.2-4d6bfe?style=flat-square" alt="DeepSeek Harness 0.2.0-rc.2" />
 </p>
 
 > **English:** dsh-subagent-library is a named subagent roster plugin for the
@@ -127,6 +127,12 @@ backgroundMode: continuable
 > 注意区分两个 provider 概念：`provider` 指 LLM 路由（`agentOptions.provider`），
 > `subagentProvider` 指子代理传输层（`ctx.subagents` 注册名，如 `spawn`/`fork`/`acp`）。
 
+## 宿主与桌面端兼容
+
+`0.3.1` 已适配 DSH `0.1.7-rc.2` 引入的 SettingsForms 设置机制；开发侧于 2026-09-30 进一步报告，它在 DSH `0.2.0-rc.2` 与同版本桌面客户端中可用。名册仍采用 0.3 系列的目录化存储与原有迁移规则，没有因本次说明更新再次迁移数据。
+
+桌面客户端沿用 Web 插件界面，无需另装桌面专用包。该兼容说明依据维护者使用反馈；模型在线调用仍取决于各 Provider 的配置与服务，不能由设置页可用推断全部模型或跨平台场景已验收。
+
 ## 安装
 
 一条命令，从 npm 安装（推荐）：
@@ -178,7 +184,7 @@ pnpm run typecheck
 pnpm run build   # host: lib/index.js；client: lib/client.js
 ```
 
-- 开发依赖仍锁定 DSH `0.1.0-rc.6`（见 package.json devDependencies），已由用户在最新 DSH `0.1.2-rc.1` 实际验证正常；其他版本如接口漂移请对照 [deepseek-harness 仓库](https://github.com/deepseek-ai/deepseek-harness) 相应 tag 调整。
+- 开发依赖仍锁定 DSH `0.1.0-rc.6`（见 package.json devDependencies），不等于当前使用宿主版本；当前兼容范围与反馈见上方「宿主与桌面端兼容」。其他版本如接口漂移请对照 [deepseek-harness 仓库](https://github.com/deepseek-ai/deepseek-harness) 相应 tag 调整。
 
 ## License
 

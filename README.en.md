@@ -9,7 +9,7 @@
 <p align="center">
   <img src="https://img.shields.io/github/actions/workflow/status/MaRi23333/dsh-subagent-library/ci.yml?style=flat-square&label=CI" alt="CI" />
   <img src="https://img.shields.io/github/license/MaRi23333/dsh-subagent-library?style=flat-square" alt="License: MIT" />
-  <img src="https://img.shields.io/badge/DeepSeek%20Harness-0.1.2--rc.1-4d6bfe?style=flat-square" alt="DeepSeek Harness 0.1.2-rc.1" />
+  <img src="https://img.shields.io/badge/DeepSeek%20Harness-0.2.0--rc.2-4d6bfe?style=flat-square" alt="DeepSeek Harness 0.2.0-rc.2" />
 </p>
 
 ## Overview
@@ -122,6 +122,12 @@ The 0.2.8 legacy `entries` fallback is for DSH ≤0.1.6 only; on DSH ≥0.1.7 th
 > Mind the two provider concepts: `provider` is the LLM route (`agentOptions.provider`),
 > while `subagentProvider` is the subagent transport (`ctx.subagents` registration name, e.g. `spawn`/`fork`/`acp`).
 
+## Host and desktop compatibility
+
+`0.3.1` adapts to the SettingsForms mechanism introduced in DSH `0.1.7-rc.2`. On 2026-09-30, the development team additionally reported it working with DSH `0.2.0-rc.2` and the desktop client of the same version. The roster retains the 0.3 series directory-backed storage and migration rules; this documentation update does not migrate data again.
+
+The desktop client uses the Web plugin UI, so no separate desktop-specific package is needed. This compatibility statement reflects maintainer usage feedback. Online model calls still depend on each provider's configuration and service; a working settings page does not establish acceptance of every model or cross-platform scenario.
+
 ## Install
 
 One command, from npm (recommended):
@@ -182,7 +188,7 @@ pnpm run typecheck
 pnpm run build   # host: lib/index.js; client: lib/client.js
 ```
 
-- Dev dependencies remain pinned to DSH `0.1.0-rc.6` (see package.json devDependencies); the user has verified the plugin on the latest DSH `0.1.2-rc.1`. If the interfaces drift on other versions, adjust against the corresponding tag of the [deepseek-harness repo](https://github.com/deepseek-ai/deepseek-harness).
+- Dev dependencies remain pinned to DSH `0.1.0-rc.6` (see package.json devDependencies); this is not the current runtime host version. See "Host and desktop compatibility" above for current support and usage feedback. If the interfaces drift on other versions, adjust against the corresponding tag of the [deepseek-harness repo](https://github.com/deepseek-ai/deepseek-harness).
 
 ## License
 
