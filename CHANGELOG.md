@@ -4,7 +4,7 @@
 
 This file documents user-facing changes. Format loosely follows [Keep a Changelog]; versions follow [SemVer].
 
-## [0.3.2] — 2026-10-04（待发布 / Unreleased）
+## [0.3.2] — 2026-10-04
 
 ### 变更 / Changed
 

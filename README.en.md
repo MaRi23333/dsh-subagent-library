@@ -126,7 +126,7 @@ The 0.2.8 legacy `entries` fallback is for DSH ≤0.1.6 only; on DSH ≥0.1.7 th
 
 `0.3.1` adapts to the SettingsForms mechanism introduced in DSH `0.1.7-rc.2`. On 2026-09-30, the development team additionally reported it working with DSH `0.2.0-rc.2` and the desktop client of the same version. The roster retains the 0.3 series directory-backed storage and migration rules; this documentation update does not migrate data again.
 
-The current **0.3.2 source candidate** only adds English and Chinese names and descriptions to the plugin manager. Roster and delegation behavior are unchanged; this candidate has not been published. See [CHANGELOG.md](./CHANGELOG.md) for update notes.
+**0.3.2** adds English and Chinese names and descriptions to the plugin manager, following the client language. Roster and delegation behavior are unchanged. See [CHANGELOG.md](./CHANGELOG.md) for update notes.
 
 The desktop client uses the Web plugin UI, so no separate desktop-specific package is needed. This compatibility statement reflects maintainer usage feedback. Online model calls still depend on each provider's configuration and service; a working settings page does not establish acceptance of every model or cross-platform scenario.
 
