@@ -4,6 +4,15 @@
 
 This file documents user-facing changes. Format loosely follows [Keep a Changelog]; versions follow [SemVer].
 
+## [0.3.2] — 2026-10-04（待发布 / Unreleased）
+
+### 变更 / Changed
+
+- 插件列表和详情页新增随 DeepSeek Harness 界面语言切换的中英文名称与简介。
+  - Added localized English and Chinese names and descriptions for the plugin list and detail page.
+- 仅修改展示元数据；YAML 名册、委派、迁移和设置页行为不变。
+  - Display metadata only; YAML roster, delegation, migration, and Settings behavior are unchanged.
+
 ## [0.3.1] — 2026-09-29（DSH 0.1.7-rc.2 适配）
 
 ### 修复 / Fixed

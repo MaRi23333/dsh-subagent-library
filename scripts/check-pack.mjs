@@ -69,6 +69,8 @@ const expected = [
   'cordis.patch.yml',
   'lib/client.js',
   'lib/index.js',
+  'locale/en.json',
+  'locale/zh.json',
   'package.json',
 ].sort()
 

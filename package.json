@@ -1,6 +1,6 @@
 {
   "name": "dsh-subagent-library",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Named subagent library for DeepSeek Harness: a directory-backed roster of role subagents (one YAML file per agent: model + persona + tool filter), exposed to every session through the list_subagents and delegate tools, a /subagent command, and a Settings page.",
   "keywords": [
     "deepseek-harness",
@@ -31,6 +31,7 @@
       "default": "./lib/client.js"
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json",
     "./package.json": "./package.json"
   },
   "files": [
@@ -40,6 +41,7 @@
     "README.md",
     "README.en.md",
     "CHANGELOG.md",
+    "locale/*.json",
     "MIGRATION.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",

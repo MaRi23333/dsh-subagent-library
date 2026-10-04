@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Named subagent library",
+    "description": "Manage reusable subagent roles as one YAML file per role in Settings, then list and delegate them from any DSH conversation."
+  }
+}
