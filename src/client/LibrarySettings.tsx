@@ -2,11 +2,16 @@
  * Settings section: edit the subagent library document through the plugin's
  * own host routes. A `settings-conflict` (409) reloads instead of clobbering
  * a concurrent change.
+ *
+ * Each collapsed card separates identity, description, model and execution
+ * metadata. Editing stays behind a disclosure so long values never compete
+ * with the name or enable switch for the same horizontal space.
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { LibraryView, LibraryWrite, LibraryWriteResult, StoredEntry } from './index.tsx'
+import { ACCENT, BANNER, DANGER, MONO, S, SETTINGS_CSS, SUCCESS } from './settings-theme.ts'
 
 export interface LibrarySettingsInjected {
   readView: () => Promise<LibraryView>
@@ -20,6 +25,13 @@ export type LibrarySettingsProps =
   PropsRuntime<'settings.section'>
   & InjectFace<LibrarySettingsInjected>
 
+/** Deep equality for the two entry shapes we compare (server row vs draft).
+ *  JSON round-trip is enough: every field is a string, number, boolean, or
+ *  array of strings, and key order is stable because both sides are built by
+ *  the same spread-from-server path. */
+const sameEntry = (a: StoredEntry | undefined, b: StoredEntry | undefined): boolean =>
+  JSON.stringify(a) === JSON.stringify(b)
+
 /** Content-adaptive textarea: grows with its text (clamped) so long personas
  *  are readable without dragging while short ones stay compact. Re-measures
  *  after every render (value changes re-render) and on input. */
@@ -30,14 +42,51 @@ function AutoTextarea(props: Omit<React.TextareaHTMLAttributes<HTMLTextAreaEleme
     const el = ref.current
     if (el === null) return
     el.style.height = 'auto'
-    el.style.height = `${Math.min(Math.max(el.scrollHeight, 110), 440)}px`
+    el.style.height = `${Math.min(Math.max(el.scrollHeight, 86), 440)}px`
   }
   useEffect(() => { resize() })
   return <textarea {...rest} ref={ref} onInput={resize} style={{ ...style, overflow: 'auto' }} />
 }
 
+/** Single-line label + control, so every field in the editor lines up on the
+ *  same left edge regardless of how many share a row. */
+function Field(props: { label: string; hint?: string; children: React.ReactNode }): React.ReactElement {
+  const { label, hint, children } = props
+  return (
+    <label style={S.field}>
+      <span style={S.fieldLabel}>{label}</span>
+      {children}
+      {hint !== undefined && <span style={{ ...S.hint, marginTop: 3 }}>{hint}</span>}
+    </label>
+  )
+}
+
+/** Chevron that rotates on open — the only motion in the page, and cheap. */
+function Chevron(props: { open: boolean }): React.ReactElement {
+  return (
+    <span style={{ ...S.chevron, transform: props.open ? 'rotate(90deg)' : 'none' }}>
+      <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M4.5 2.5L8 6l-3.5 3.5" />
+      </svg>
+    </span>
+  )
+}
+
+/** Parse / render the comma-separated deny list without ever dropping a
+ *  hand-written allow list the editor does not surface. */
+const parseList = (value: string): string[] => value.split(',').map((item) => item.trim()).filter(Boolean)
+const listToText = (list: string[] | undefined): string => (list ?? []).join(', ')
+
+/** Draft actions disappear on success. Keep keyboard focus on their card. */
+function focusDisclosure(event: React.MouseEvent<HTMLButtonElement>): void {
+  if (event.detail === 0) {
+    event.currentTarget.closest('[data-entry-id]')?.querySelector<HTMLButtonElement>('[data-row-id]')?.focus()
+  }
+}
+
 export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement {
   const { readView, writeView, subscribeRefresh } = props
+  const sectionId = useId()
 
   const [view, setView] = useState<LibraryView | null>(null)
   const [entries, setEntries] = useState<Record<string, StoredEntry>>({})
@@ -45,6 +94,10 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
   const [status, setStatus] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
   const [newId, setNewId] = useState('')
   const [newEntry, setNewEntry] = useState<StoredEntry>({ description: '', provider: '', model: '', backgroundMode: 'one-shot' })
+  /** Editing is opt-in; newly created entries open to finish configuration. */
+  const [open, setOpen] = useState<Record<string, boolean>>({})
+  const [adding, setAdding] = useState(false)
+  const [filter, setFilter] = useState('')
 
   const alive = useRef(true)
   /** Synchronous busy flag (see applyWrite's re-entry guard). */
@@ -174,14 +227,17 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
   const updateEntry = (id: string, entry: StoredEntry): void => {
     if ((entry.description ?? '').trim() === '') {
       setStatus({ kind: 'error', text: '描述不能为空。' })
+      setOpen((current) => ({ ...current, [id]: true }))
       return
     }
     if (entry.maxDepth !== undefined && (!Number.isInteger(entry.maxDepth) || entry.maxDepth < 1)) {
       setStatus({ kind: 'error', text: '深度上限需为 ≥1 的整数。' })
+      setOpen((current) => ({ ...current, [id]: true }))
       return
     }
     if (entry.maxTokens !== undefined && (!Number.isInteger(entry.maxTokens) || entry.maxTokens < 1)) {
       setStatus({ kind: 'error', text: '输出上限需为 ≥1 的整数。' })
+      setOpen((current) => ({ ...current, [id]: true }))
       return
     }
     // Save against the server truth, not the local snapshot: an unsaved draft
@@ -217,139 +273,130 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
       if (alive.current && ok) {
         setNewId('')
         setNewEntry({ description: '', provider: '', model: '', backgroundMode: 'one-shot' })
+        setAdding(false)
+        setOpen((current) => ({ ...current, [id]: true }))
       }
     })
   }
 
-  // ── styles (theme-neutral rgba grays, same posture as the 个性化指令 editor:
-  //    every color works on light and dark without theme variables) ──────────
-  const rootStyle = { display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 860, padding: '12px 4px' } as const
-  const headingStyle = { fontSize: 15, fontWeight: 600, margin: 0 } as const
-  const subStyle = { fontSize: 12.5, opacity: 0.7, margin: 0 } as const
-  const rowStyle = { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } as const
-  /** Shrinkable multi-column row: min-width 0 lets inputs shrink below their
-   *  intrinsic width instead of overflowing the settings card (form controls
-   *  otherwise keep their default width as a flex minimum). */
-  const colStyle = { display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 } as const
-  /** Content-width column for FIXED-width controls (number input, select):
-   *  flex-basis-0 columns ignore their children when distributing width, and
-   *  an overflowing visible-box child paints over the neighbor. */
-  const fixedColStyle = { display: 'flex', alignItems: 'center', gap: 8 } as const
-  const labelStyle = { fontSize: 13, opacity: 0.75, minWidth: '72px' } as const
-  const inputStyle = {
-    flex: 1,
-    minWidth: 0,
-    fontSize: 13,
-    fontFamily: 'Consolas, Menlo, monospace',
-    lineHeight: 1.5,
-    padding: '5px 8px',
-    border: '1px solid rgba(128,128,128,0.4)',
-    borderRadius: 6,
-    background: 'transparent',
-    color: 'inherit',
-  } as const
-  /** Prose fields (description, persona) use the UI font at a readable size —
-   *  long Chinese text in small monospace was the readability complaint. */
-  const proseStyle = {
-    ...inputStyle,
-    fontFamily: 'inherit',
-    fontSize: 13.5,
-    lineHeight: 1.6,
-  } as const
-  /** Persona editor: adaptive height comes from AutoTextarea (110–440px by
-   *  content); the style only carries font/border. */
-  const textareaStyle = {
-    ...proseStyle,
-    resize: 'vertical',
-    whiteSpace: 'pre-wrap',
-    overflowWrap: 'anywhere',
-  } as const
-  const buttonStyle = {
-    padding: '4px 12px',
-    fontSize: 12.5,
-    borderRadius: 6,
-    border: '1px solid rgba(128,128,128,0.4)',
-    background: 'transparent',
-    color: 'inherit',
-    cursor: 'pointer',
-    opacity: busy ? 0.55 : 1,
-  } as const
-  const primaryStyle = {
-    ...buttonStyle,
-    border: '1px solid transparent',
-    background: 'rgba(59,130,246,0.9)',
-    color: '#fff',
-  } as const
-  const dangerStyle = {
-    ...buttonStyle,
-    border: '1px solid rgba(220,38,38,0.55)',
-  } as const
-  const chipStyle = {
-    display: 'inline-flex',
-    alignItems: 'center',
-    padding: '1px 8px',
-    fontSize: 11,
-    borderRadius: 999,
-    border: '1px solid rgba(128,128,128,0.45)',
-    opacity: 0.8,
-  } as const
-  const cardStyle = {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 8,
-    padding: 12,
-    border: '1px solid rgba(128,128,128,0.35)',
-    borderRadius: 8,
-  } as const
-  const hintStyle = { fontSize: 11.5, opacity: 0.6, margin: 0 } as const
-  const bannerStyle = {
-    fontSize: 12,
-    padding: '6px 10px',
-    borderRadius: 6,
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 2,
-  } as const
-  const okBannerStyle = { ...bannerStyle, background: 'rgba(22,163,74,0.12)', border: '1px solid rgba(22,163,74,0.4)' } as const
-  const errorBannerStyle = { ...bannerStyle, background: 'rgba(220,38,38,0.12)', border: '1px solid rgba(220,38,38,0.45)', color: 'inherit' } as const
-  const warnBannerStyle = { ...bannerStyle, background: 'rgba(217,119,6,0.14)', border: '1px solid rgba(217,119,6,0.45)' } as const
-  const infoBannerStyle = { ...bannerStyle, background: 'rgba(128,128,128,0.12)', border: '1px solid rgba(128,128,128,0.35)' } as const
+  /** One row's field edit; `patch` merges onto the current draft. */
+  const patch = (id: string, changes: Partial<StoredEntry>): void => {
+    setEntries((current) => ({ ...current, [id]: { ...current[id], ...changes } }))
+  }
 
+  const revertEntry = (id: string): void => {
+    const saved = view?.entries[id]
+    if (saved !== undefined) {
+      setEntries((current) => ({ ...current, [id]: structuredClone(saved) }))
+    }
+  }
+
+  const setDeny = (id: string, text: string): void => {
+    const deny = parseList(text)
+    const allow = entries[id]?.toolFilter?.allow
+    const keepAllow = allow !== undefined && allow.length > 0
+    patch(id, {
+      toolFilter: keepAllow || deny.length > 0
+        ? {
+            ...(keepAllow ? { allow } : {}),
+            ...(deny.length > 0 ? { deny } : {}),
+          }
+        : undefined,
+    })
+  }
+
+  // ── derived: summary + ordering + filtering ──────────────────────────────
+  const ids = useMemo(() => Object.keys(entries), [entries])
+  const stats = useMemo(() => {
+    let off = 0
+    let legacy = 0
+    for (const id of ids) {
+      const entry = entries[id]
+      if (entry.enabled === false) off += 1
+      if (entry.source === 'legacy') legacy += 1
+    }
+    return { total: ids.length, off, legacy }
+  }, [ids, entries])
+
+  /** Disabled rows sink to the bottom (they are not what you came to look at),
+   *  then plain alphabetical. */
+  const orderedIds = useMemo(() => [...ids].sort((a, b) => {
+    const offA = entries[a].enabled === false ? 1 : 0
+    const offB = entries[b].enabled === false ? 1 : 0
+    if (offA !== offB) return offA - offB
+    return a.localeCompare(b)
+  }), [ids, entries])
+
+  const needle = filter.trim().toLowerCase()
+  const visibleIds = useMemo(() => {
+    if (needle === '') return orderedIds
+    return orderedIds.filter((id) => {
+      const entry = entries[id]
+      const haystack = [id, entry.description, entry.model, entry.provider, entry.reasoningEffort, entry.persona]
+        .filter((value): value is string => typeof value === 'string')
+        .join('\n')
+        .toLowerCase()
+      return haystack.includes(needle)
+    })
+  }, [orderedIds, entries, needle])
+
+  const dirtyIds = useMemo(() => {
+    const set = new Set<string>()
+    for (const id of ids) {
+      if (!sameEntry(entries[id], view?.entries[id])) set.add(id)
+    }
+    return set
+  }, [ids, entries, view])
+
+  const openCount = visibleIds.filter((id) => open[id] === true).length
+  const allOpen = visibleIds.length > 0 && openCount === visibleIds.length
+  const toggleAll = (): void => {
+    setOpen((current) => {
+      const next = { ...current }
+      for (const id of visibleIds) next[id] = !allOpen
+      return next
+    })
+  }
+
+  // ── render ───────────────────────────────────────────────────────────────
   if (view === null) {
     return (
-      <div style={rootStyle}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={headingStyle}>子代理库</div>
-          <button type="button" onClick={load} style={buttonStyle}>重试</button>
+      <div className="dsh-library" style={S.root}>
+        <style>{SETTINGS_CSS}</style>
+        <div style={S.headingRow}>
+          <div style={S.heading}>子代理库</div>
+          <button type="button" onClick={load} style={S.button}>重试</button>
         </div>
         {status !== null && (
-          <div style={status.kind === 'ok' ? okBannerStyle : errorBannerStyle}>{status.text}</div>
+          <div style={status.kind === 'ok' ? BANNER.ok : BANNER.error}>{status.text}</div>
         )}
-        {status === null && <div style={subStyle}>正在加载…（若长时间无响应，请重试或检查插件是否加载）</div>}
+        {status === null && <div style={S.sub}>正在加载…（若长时间无响应，请重试或检查插件是否加载）</div>}
       </div>
     )
   }
 
-  const ids = Object.keys(entries)
-
   return (
-    <div style={rootStyle}>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={headingStyle}>子代理库</div>
-          <button type="button" onClick={load} style={buttonStyle}>刷新</button>
+    <div className="dsh-library" style={S.root}>
+      <style>{SETTINGS_CSS}</style>
+      <div style={S.pageHeader}>
+        <div style={S.headingRow}>
+          <h2 style={S.heading}>子代理库</h2>
+          <span style={{ flex: 1 }} />
+          <button type="button" onClick={load} disabled={busy} style={S.button}>刷新</button>
         </div>
-        <span style={subStyle}>管理具名角色子代理（每条目一个 YAML 文件，保存即热生效）。让 agent 修改条目前，建议先把原文件复制到名册目录的 <code>_backups/</code> 里。</span>
+        <span style={S.sub}>
+          集中管理角色、模型与执行方式。展开条目编辑，保存后即刻生效。
+        </span>
       </div>
 
       {(view.diagnostics?.length ?? 0) > 0 && (
-        <div style={warnBannerStyle}>
+        <div style={BANNER.warn}>
           {view.diagnostics!.map((item, index) => (
             <div
               key={index}
               style={{
                 fontWeight: item.severity === 'error' ? 600 : 400,
-                opacity: item.severity === 'info' ? 0.75 : 1,
+                opacity: item.severity === 'info' ? 0.78 : 1,
               }}
             >
               {item.severity === 'error' ? '错误' : item.severity === 'warning' ? '警告' : '提示'}{item.id !== undefined ? ` [${item.id}]` : ''}：{item.message}
@@ -359,7 +406,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
       )}
 
       {(view.legacyCount ?? 0) > 0 && (
-        <div style={infoBannerStyle}>
+        <div style={BANNER.info}>
           <span>
             0.2→0.3 迁移：{view.legacyCount} 个旧条目已导出为名册文件并优先生效，settings.yaml 中的旧副本仍在（仅作回滚兜底）。确认名册正常后可一键清除。
           </span>
@@ -371,299 +418,423 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
                 void applyWrite({ op: 'clear-legacy', expectedHash: view?.hash }, '')
               }
             }}
-            style={{ ...buttonStyle, alignSelf: 'flex-start' }}
+            style={{ ...S.button, alignSelf: 'flex-start' }}
           >
             清除旧条目
           </button>
         </div>
       )}
 
-      {ids.length === 0 && (
-        <div style={subStyle}>库为空。添加第一个条目开始使用，或在名册目录放一个 &lt;id&gt;.yaml。</div>
+      {/* Summary band — the "at a glance" answer, before any scrolling. */}
+      <div style={S.band}>
+        <div style={S.bandStats}>
+          <div style={S.bandStat}>
+            <span style={S.bandValue}>{stats.total}</span>
+            <span style={S.bandLabel}>个子代理</span>
+          </div>
+          <div style={S.bandStat}>
+            <span style={{ ...S.bandValue, color: SUCCESS }}>{stats.total - stats.off}</span>
+            <span style={S.bandLabel}>已启用</span>
+          </div>
+          {stats.off > 0 && (
+            <div style={S.bandStat}>
+              <span style={S.bandValue}>{stats.off}</span>
+              <span style={S.bandLabel}>已停用</span>
+            </div>
+          )}
+          {dirtyIds.size > 0 && (
+            <div style={S.bandStat}>
+              <span style={{ ...S.bandValue, color: DANGER }}>{dirtyIds.size}</span>
+              <span style={S.bandLabel}>未保存</span>
+            </div>
+          )}
+        </div>
+        <div style={S.bandDir}>
+          <span style={S.bandLabel}>名册目录</span>
+          <span style={S.bandPath} title={view.dir || '~/.dsh/subagents'}>{view.dir || '~/.dsh/subagents'}</span>
+        </div>
+      </div>
+
+      {stats.total > 0 && (
+        <div style={S.bar}>
+          <label style={S.search}>
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" style={{ color: 'inherit', opacity: 0.6, flex: 'none' }} aria-hidden="true">
+              <circle cx="5" cy="5" r="3.4" />
+              <path d="M7.6 7.6L10.5 10.5" />
+            </svg>
+            <input
+              value={filter}
+              onChange={(event) => setFilter(event.target.value)}
+              placeholder="筛选 id、描述、模型…"
+              aria-label="筛选子代理"
+              style={S.searchInput}
+            />
+            {filter !== '' && (
+              <button
+                type="button"
+                onClick={() => setFilter('')}
+                title="清除筛选"
+                style={{ ...S.ghost, padding: 0, fontSize: 13, lineHeight: 1 }}
+              >
+                ×
+              </button>
+            )}
+          </label>
+          <button type="button" onClick={toggleAll} disabled={visibleIds.length === 0} style={S.button}>{allOpen ? '全部收起' : '全部展开'}</button>
+          <button
+            type="button"
+            onClick={() => setAdding((current) => !current)}
+            style={adding ? S.button : S.primary}
+          >
+            {adding ? '取消新增' : '＋ 新增子代理'}
+          </button>
+        </div>
       )}
 
-      {ids.map((id) => {
-        const entry = entries[id]
-        return (
-          <div key={id} style={cardStyle}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 13, fontWeight: 600, fontFamily: 'Consolas, Menlo, monospace', opacity: entry.enabled === false ? 0.5 : 1 }}>{id}</span>
-              {entry.source === 'legacy' && <span style={chipStyle}>legacy</span>}
-              {entry.enabled === false && <span style={chipStyle}>已停用</span>}
-              <span style={{ fontSize: 11.5, opacity: 0.7 }}>
-                {entry.provider || '默认路由'}/{entry.model || '默认模型'}
-                {entry.backgroundMode === 'continuable' ? ' · 可续聊' : ''}
-                {entry.maxDepth !== undefined ? ` · 深度${entry.maxDepth}` : ''}
-                {entry.maxTokens !== undefined ? ` · ${entry.maxTokens}tok` : ''}
-              </span>
-              <span style={{ flex: 1 }} />
-              <label style={{ fontSize: 12.5, display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
-                <input
-                  type="checkbox"
-                  checked={entry.enabled !== false}
-                  onChange={(event) => setEntries({ ...entries, [id]: { ...entry, enabled: event.target.checked ? undefined : false } })}
-                />
-                启用
-              </label>
-              <button type="button" disabled={busy} onClick={() => removeEntry(id)} style={dangerStyle}>删除</button>
-              <button type="button" disabled={busy} onClick={() => updateEntry(id, entry)} style={primaryStyle}>保存</button>
+      {/* Add-card: default-collapsed behind the bar button so the roster owns
+          the screen; it expands into the same field groups an entry row uses. */}
+      {(adding || stats.total === 0) && (
+        <div className="dsh-library-card" style={{ ...S.row, ...S.rowOpen }}>
+          <div style={S.addHead}>
+            <div style={S.addIntro}>
+              <span style={{ ...S.id, color: ACCENT }}>新增子代理</span>
+              <span style={S.sub}>填写 ID 与角色描述，其余配置可稍后补充。</span>
             </div>
-
-            <div style={rowStyle}>
-              <span style={labelStyle}>描述</span>
+            <button type="button" disabled={busy} onClick={addEntry} style={S.primary}>创建子代理</button>
+          </div>
+          <div style={S.body}>
+            <div className="dsh-library-grid" style={S.grid}>
+              <Field label="ID" hint="小写字母 / 数字 / 连字符">
+                <input value={newId} onChange={(event) => setNewId(event.target.value)} placeholder="k3-reviewer" style={S.input} />
+              </Field>
+              <Field label="模型" hint="留空随默认路由">
+                <input value={newEntry.model ?? ''} onChange={(event) => setNewEntry({ ...newEntry, model: event.target.value })} placeholder="k3-256k" style={S.input} />
+              </Field>
+            </div>
+            <Field label="描述（模型可见）">
               <textarea
-                value={entry.description ?? ''}
-                onChange={(event) => setEntries({ ...entries, [id]: { ...entry, description: event.target.value } })}
-                placeholder="角色描述（模型可见，可拖右下角展开）"
+                value={newEntry.description ?? ''}
+                onChange={(event) => setNewEntry({ ...newEntry, description: event.target.value })}
+                placeholder="一句话说明这个角色做什么——模型靠它选人"
                 rows={1}
-                style={{ ...proseStyle, resize: 'vertical', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', overflow: 'auto' }}
+                style={{ ...S.prose, overflow: 'auto' }}
               />
-            </div>
-
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-              <div style={colStyle}>
-                <span style={labelStyle}>Provider</span>
-                <input
-                  value={entry.provider ?? ''}
-                  onChange={(event) => setEntries({ ...entries, [id]: { ...entry, provider: event.target.value } })}
-                  placeholder="deepseek-official / kimi-coding"
-                  style={inputStyle}
-                />
-              </div>
-              <div style={colStyle}>
-                <span style={labelStyle}>模型</span>
-                <input
-                  value={entry.model ?? ''}
-                  onChange={(event) => setEntries({ ...entries, [id]: { ...entry, model: event.target.value } })}
-                  placeholder="k3-256k"
-                  style={inputStyle}
-                />
-              </div>
-            </div>
-
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-              <div style={colStyle}>
-                <span style={labelStyle}>传输层</span>
-                <input
-                  value={entry.subagentProvider ?? ''}
-                  onChange={(event) => setEntries({ ...entries, [id]: { ...entry, subagentProvider: event.target.value } })}
-                  placeholder="spawn（默认）"
-                  style={inputStyle}
-                />
-              </div>
-              <div style={fixedColStyle}>
-                <span style={labelStyle}>输出上限</span>
-                <input
-                  type="number"
-                  min={1}
-                  value={entry.maxTokens ?? ''}
-                  onChange={(event) => setEntries({ ...entries, [id]: { ...entry, maxTokens: event.target.value === '' ? undefined : Number(event.target.value) } })}
-                  placeholder="tokens"
-                  style={{ ...inputStyle, flex: 'none', width: 116 }}
-                />
-              </div>
-            </div>
-
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-              <div style={fixedColStyle}>
-                <span style={labelStyle}>深度上限</span>
-                <input
-                  type="number"
-                  min={1}
-                  value={entry.maxDepth ?? ''}
-                  onChange={(event) => setEntries({ ...entries, [id]: { ...entry, maxDepth: event.target.value === '' ? undefined : Number(event.target.value) } })}
-                  style={{ ...inputStyle, flex: 'none', width: 84 }}
-                />
-              </div>
-              <div style={{ ...colStyle, flex: 1 }}>
-                <span style={labelStyle}>禁用工具</span>
-                <input
-                  value={(entry.toolFilter?.deny ?? []).join(', ')}
-                  onChange={(event) => {
-                    const deny = event.target.value.split(',').map((item) => item.trim()).filter(Boolean)
-                    // The editor only shows deny; a hand-written allow list is
-                    // preserved so an edit to deny cannot silently drop it.
-                    const allow = entry.toolFilter?.allow
-                    setEntries({
-                      ...entries,
-                      [id]: {
-                        ...entry,
-                        toolFilter: (allow !== undefined && allow.length > 0) || deny.length > 0
-                          ? {
-                              ...(allow !== undefined && allow.length > 0 ? { allow } : {}),
-                              ...(deny.length > 0 ? { deny } : {}),
-                            }
-                          : undefined,
-                      },
-                    })
-                  }}
-                  placeholder="write, edit, todo_write, …"
-                  style={inputStyle}
-                />
-              </div>
-            </div>
-
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-              <div style={{ ...colStyle, flex: 1 }}>
-                <span style={labelStyle}>思考强度</span>
-                <input
-                  value={entry.reasoningEffort ?? ''}
-                  onChange={(event) => setEntries({ ...entries, [id]: { ...entry, reasoningEffort: event.target.value === '' ? undefined : event.target.value.trim() } })}
-                  placeholder="如 max / high / medium / low（留空随父会话默认）"
-                  style={inputStyle}
-                />
-              </div>
-              <div style={fixedColStyle}>
-                <span style={labelStyle}>后台模式</span>
+            </Field>
+            <div className="dsh-library-grid" style={S.grid}>
+              <Field label="Provider">
+                <input value={newEntry.provider ?? ''} onChange={(event) => setNewEntry({ ...newEntry, provider: event.target.value })} placeholder="kimi-coding" style={S.input} />
+              </Field>
+              <Field label="传输层">
+                <input value={newEntry.subagentProvider ?? ''} onChange={(event) => setNewEntry({ ...newEntry, subagentProvider: event.target.value })} placeholder="spawn（默认）" style={S.input} />
+              </Field>
+              <Field label="后台模式">
                 <select
-                  value={entry.backgroundMode ?? 'one-shot'}
-                  onChange={(event) => setEntries({ ...entries, [id]: { ...entry, backgroundMode: event.target.value as 'one-shot' | 'continuable' } })}
-                  style={{ ...inputStyle, flex: 'none', width: 132 }}
+                  value={newEntry.backgroundMode ?? 'one-shot'}
+                  onChange={(event) => setNewEntry({ ...newEntry, backgroundMode: event.target.value as 'one-shot' | 'continuable' })}
+                  style={S.input}
                 >
                   <option value="one-shot">one-shot</option>
                   <option value="continuable">continuable</option>
                 </select>
+              </Field>
+              <Field label="深度上限">
+                <input
+                  type="number"
+                  min={1}
+                  value={newEntry.maxDepth ?? ''}
+                  onChange={(event) => setNewEntry({ ...newEntry, maxDepth: event.target.value === '' ? undefined : Number(event.target.value) })}
+                  style={S.input}
+                />
+              </Field>
+              <Field label="输出上限">
+                <input
+                  type="number"
+                  min={1}
+                  value={newEntry.maxTokens ?? ''}
+                  onChange={(event) => setNewEntry({ ...newEntry, maxTokens: event.target.value === '' ? undefined : Number(event.target.value) })}
+                  placeholder="tokens"
+                  style={S.input}
+                />
+              </Field>
+            </div>
+            <div className="dsh-library-grid" style={S.grid}>
+              <Field label="思考强度">
+                <input
+                  value={newEntry.reasoningEffort ?? ''}
+                  onChange={(event) => setNewEntry({ ...newEntry, reasoningEffort: event.target.value === '' ? undefined : event.target.value.trim() })}
+                  placeholder="max / high / medium / low（留空随父会话默认）"
+                  style={S.input}
+                />
+              </Field>
+              <Field label="禁用工具" hint="英文逗号分隔；写入时只增删 deny，不触碰手写的 allow">
+                <input
+                  value={listToText(newEntry.toolFilter?.deny)}
+                  onChange={(event) => {
+                    const deny = parseList(event.target.value)
+                    const allow = newEntry.toolFilter?.allow
+                    const keepAllow = allow !== undefined && allow.length > 0
+                    setNewEntry({
+                      ...newEntry,
+                      toolFilter: keepAllow || deny.length > 0
+                        ? { ...(keepAllow ? { allow } : {}), ...(deny.length > 0 ? { deny } : {}) }
+                        : undefined,
+                    })
+                  }}
+                  placeholder="write, edit, todo_write, …"
+                  style={S.input}
+                />
+              </Field>
+            </div>
+            <Field label="角色提示词（可选）">
+              <AutoTextarea
+                value={newEntry.persona ?? ''}
+                onChange={(event) => setNewEntry({ ...newEntry, persona: event.target.value })}
+                placeholder="子代理的系统提示词"
+                style={S.prose}
+              />
+            </Field>
+          </div>
+        </div>
+      )}
+
+      {stats.total === 0 && (
+        <div style={S.empty}>
+          库为空。在上方填一个 id 与描述即可创建第一个条目，
+          <br />
+          或直接在名册目录放一个 <code>&lt;id&gt;.yaml</code>。
+        </div>
+      )}
+
+      {stats.total > 0 && visibleIds.length === 0 && (
+        <div style={S.empty}>没有匹配「{filter}」的条目。</div>
+      )}
+
+      {visibleIds.length > 0 && (
+        <div style={S.listCaption}>
+          <span>{needle === '' ? '角色名册' : `匹配 ${visibleIds.length} / ${stats.total} 个子代理`}</span>
+          <span>点击名称展开配置</span>
+        </div>
+      )}
+
+      <div style={S.list}>
+        {visibleIds.map((id) => {
+          const entry = entries[id]
+          const isOpen = open[id] === true
+          const dirty = dirtyIds.has(id)
+          const off = entry.enabled === false
+          const model = entry.model || ''
+          const provider = entry.provider || ''
+          const route = provider !== '' && model !== ''
+            ? `${provider}/${model}`
+            : model !== '' ? model : provider !== '' ? provider : '默认路由'
+          return (
+            <div key={id} className="dsh-library-card" data-entry-id={id} style={{ ...S.row, ...(isOpen ? S.rowOpen : null), ...(off ? S.rowOff : null) }}>
+              <div style={S.head}>
+                <button
+                  type="button"
+                  className="dsh-library-disclosure"
+                  style={S.disclosure}
+                  aria-expanded={isOpen}
+                  aria-controls={`${sectionId}-${id}`}
+                  aria-label={`${isOpen ? '收起' : '展开'} ${id} 的配置`}
+                  data-row-id={id}
+                  onClick={() => setOpen((current) => ({ ...current, [id]: !isOpen }))}
+                >
+                  <Chevron open={isOpen} />
+                  <span style={S.titleRow}>
+                    <span style={S.id}>{id}</span>
+                    {entry.source === 'legacy' && <span style={S.chip}>旧版条目</span>}
+                    {dirty && <span style={S.dirtyChip}>未保存</span>}
+                  </span>
+                </button>
+                <label
+                  style={S.headToggle}
+                  title="切换后需保存此条目才会生效"
+                >
+                  <input
+                    className="dsh-library-switch"
+                    type="checkbox"
+                    role="switch"
+                    aria-label={`启用 ${id}`}
+                    checked={!off}
+                    onChange={(event) => patch(id, { enabled: event.target.checked ? undefined : false })}
+                  />
+                  <span>{off ? '已停用' : '已启用'}</span>
+                </label>
+              </div>
+
+              <div style={S.overview}>
+                <p style={S.excerpt} title={entry.description ?? ''}>
+                  {entry.description || '暂无角色描述'}
+                </p>
+                <div style={S.route} title={`路由：${route}`}>
+                  <span style={S.metaLabel}>模型</span>
+                  <span style={S.model}>{model || '跟随默认模型'}</span>
+                  {provider !== '' && <span style={S.provider}>{provider}</span>}
+                </div>
+                <div style={S.glyphs}>
+                  <span style={entry.backgroundMode === 'continuable' ? S.modeChip : S.glyph}>
+                    {entry.backgroundMode === 'continuable' ? '可续聊' : '单次任务'}
+                  </span>
+                  {entry.reasoningEffort && <span style={S.glyph}>思考 <span style={S.metaValue}>{entry.reasoningEffort}</span></span>}
+                  {entry.maxDepth !== undefined && <span style={S.glyph}>深度 <span style={S.metaValue}>{entry.maxDepth}</span></span>}
+                  {entry.maxTokens !== undefined && <span style={S.glyph}>输出 <span style={S.metaValue}>{entry.maxTokens.toLocaleString('en-US')}</span> tokens</span>}
+                  {entry.persona && <span style={S.glyph}>角色提示词</span>}
+                  {(entry.toolFilter?.deny?.length ?? 0) > 0 && <span style={S.glyph}>禁用 {entry.toolFilter!.deny!.length} 项工具</span>}
+                  {(entry.toolFilter?.allow?.length ?? 0) > 0 && <span style={S.glyph}>允许 {entry.toolFilter!.allow!.length} 项工具</span>}
+                </div>
+              </div>
+
+              {dirty && !isOpen && (
+                <div style={S.draftActions}>
+                  <span style={S.hint}>保存后生效</span>
+                  <span style={S.spacer} />
+                  <button type="button" disabled={busy} onClick={(event) => { focusDisclosure(event); revertEntry(id) }} style={S.ghost}>还原</button>
+                  <button type="button" disabled={busy} onClick={(event) => { focusDisclosure(event); updateEntry(id, entry) }} style={S.primary}>保存修改</button>
+                </div>
+              )}
+
+              <div id={`${sectionId}-${id}`} hidden={!isOpen}>
+                {isOpen && <div style={S.body}>
+                  <div style={S.group}>
+                    <span style={S.groupTitle}>概述</span>
+                    <Field label="描述（模型可见）" hint="模型用 list_subagents 读到的就是这句话，写清角色与适用场景">
+                      <textarea
+                        value={entry.description ?? ''}
+                        onChange={(event) => patch(id, { description: event.target.value })}
+                        placeholder="角色描述"
+                        rows={1}
+                        style={{ ...S.prose, overflow: 'auto' }}
+                      />
+                    </Field>
+                  </div>
+
+                  <div style={S.group}>
+                    <span style={S.groupTitle}>路由与执行</span>
+                    <div className="dsh-library-grid" style={S.grid}>
+                      <Field label="Provider">
+                        <input value={entry.provider ?? ''} onChange={(event) => patch(id, { provider: event.target.value })} placeholder="deepseek-official / kimi-coding" style={S.input} />
+                      </Field>
+                      <Field label="模型">
+                        <input value={entry.model ?? ''} onChange={(event) => patch(id, { model: event.target.value })} placeholder="k3-256k" style={S.input} />
+                      </Field>
+                      <Field label="传输层" hint="留空用 spawn">
+                        <input value={entry.subagentProvider ?? ''} onChange={(event) => patch(id, { subagentProvider: event.target.value })} placeholder="spawn（默认）" style={S.input} />
+                      </Field>
+                      <Field label="后台模式">
+                        <select
+                          value={entry.backgroundMode ?? 'one-shot'}
+                          onChange={(event) => patch(id, { backgroundMode: event.target.value as 'one-shot' | 'continuable' })}
+                          style={S.input}
+                        >
+                          <option value="one-shot">one-shot</option>
+                          <option value="continuable">continuable</option>
+                        </select>
+                      </Field>
+                    </div>
+                    <div className="dsh-library-grid" style={S.grid}>
+                      <Field label="思考强度" hint="留空随父会话默认">
+                        <input
+                          value={entry.reasoningEffort ?? ''}
+                          onChange={(event) => patch(id, { reasoningEffort: event.target.value === '' ? undefined : event.target.value.trim() })}
+                          placeholder="max / high / medium / low"
+                          style={S.input}
+                        />
+                      </Field>
+                      <Field label="深度上限">
+                        <input
+                          type="number"
+                          min={1}
+                          value={entry.maxDepth ?? ''}
+                          onChange={(event) => patch(id, { maxDepth: event.target.value === '' ? undefined : Number(event.target.value) })}
+                          style={S.input}
+                        />
+                      </Field>
+                      <Field label="输出上限">
+                        <input
+                          type="number"
+                          min={1}
+                          value={entry.maxTokens ?? ''}
+                          onChange={(event) => patch(id, { maxTokens: event.target.value === '' ? undefined : Number(event.target.value) })}
+                          placeholder="tokens"
+                          style={S.input}
+                        />
+                      </Field>
+                    </div>
+                  </div>
+
+                  <div style={S.group}>
+                    <span style={S.groupTitle}>工具与提示词</span>
+                    <Field label="禁用工具" hint="英文逗号分隔；留空表示不限制。手写的 allow 列表会原样保留">
+                      <input
+                        value={listToText(entry.toolFilter?.deny)}
+                        onChange={(event) => setDeny(id, event.target.value)}
+                        placeholder="write, edit, todo_write, …"
+                        style={S.input}
+                      />
+                    </Field>
+                    <Field label="角色提示词（可选）">
+                      <AutoTextarea
+                        value={entry.persona ?? ''}
+                        onChange={(event) => patch(id, { persona: event.target.value })}
+                        placeholder="子代理的系统提示词"
+                        style={S.prose}
+                      />
+                    </Field>
+                  </div>
+
+                  <div style={S.actions}>
+                    {dirty
+                      ? <span style={{ ...S.hint, color: DANGER }}>此条目有未保存修改</span>
+                      : <span style={S.hint}>{entry.source === 'legacy' ? '来自 settings.yaml 的迁移副本' : '与名册文件一致'}</span>}
+                    <span style={S.spacer} />
+                    <button
+                      type="button"
+                      disabled={busy || !dirty}
+                      onClick={() => revertEntry(id)}
+                      style={{ ...S.ghost, opacity: busy || !dirty ? 0.45 : 1 }}
+                      title="丢弃本行的未保存修改，恢复为服务器当前值"
+                    >
+                      还原
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => removeEntry(id)}
+                      style={{ ...S.danger, opacity: busy ? 0.55 : 1 }}
+                    >
+                      删除
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy || !dirty}
+                      onClick={() => updateEntry(id, entry)}
+                      style={{ ...S.primary, opacity: busy || !dirty ? 0.5 : 1 }}
+                    >
+                      保存
+                    </button>
+                  </div>
+                </div>}
               </div>
             </div>
-
-            <div style={rowStyle}>
-              <span style={labelStyle}>角色提示词</span>
-              <AutoTextarea
-                value={entry.persona ?? ''}
-                onChange={(event) => setEntries({ ...entries, [id]: { ...entry, persona: event.target.value } })}
-                placeholder="子代理的系统提示词（可选）"
-                style={textareaStyle}
-              />
-            </div>
-          </div>
-        )
-      })}
-
-      {/* Add-card mirrors the entry-card rhythm: header row with the action
-          button on the right, then one label row per field group. */}
-      <div style={cardStyle}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <span style={{ fontSize: 13, fontWeight: 600 }}>新增子代理</span>
-          <span style={{ flex: 1 }} />
-          <button type="button" disabled={busy} onClick={addEntry} style={primaryStyle}>添加</button>
-        </div>
-        <div style={rowStyle}>
-          <span style={labelStyle}>ID</span>
-          <input value={newId} onChange={(event) => setNewId(event.target.value)} placeholder="k3-reviewer" style={{ ...inputStyle, maxWidth: '200px' }} />
-        </div>
-        <div style={rowStyle}>
-          <span style={labelStyle}>描述</span>
-          <textarea
-            value={newEntry.description ?? ''}
-            onChange={(event) => setNewEntry({ ...newEntry, description: event.target.value })}
-            placeholder="角色描述（模型可见，可拖右下角展开）"
-            rows={1}
-            style={{ ...proseStyle, resize: 'vertical', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', overflow: 'auto' }}
-          />
-        </div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-          <div style={colStyle}>
-            <span style={labelStyle}>Provider</span>
-            <input value={newEntry.provider ?? ''} onChange={(event) => setNewEntry({ ...newEntry, provider: event.target.value })} placeholder="kimi-coding" style={inputStyle} />
-          </div>
-          <div style={colStyle}>
-            <span style={labelStyle}>模型</span>
-            <input value={newEntry.model ?? ''} onChange={(event) => setNewEntry({ ...newEntry, model: event.target.value })} placeholder="k3-256k" style={inputStyle} />
-          </div>
-        </div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-          <div style={colStyle}>
-            <span style={labelStyle}>传输层</span>
-            <input value={newEntry.subagentProvider ?? ''} onChange={(event) => setNewEntry({ ...newEntry, subagentProvider: event.target.value })} placeholder="spawn（默认）" style={inputStyle} />
-          </div>
-          <div style={fixedColStyle}>
-            <span style={labelStyle}>输出上限</span>
-            <input
-              type="number"
-              min={1}
-              value={newEntry.maxTokens ?? ''}
-              onChange={(event) => setNewEntry({ ...newEntry, maxTokens: event.target.value === '' ? undefined : Number(event.target.value) })}
-              placeholder="tokens（可选）"
-              style={{ ...inputStyle, flex: 'none', width: 116 }}
-            />
-          </div>
-        </div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-          <div style={fixedColStyle}>
-            <span style={labelStyle}>深度上限</span>
-            <input
-              type="number"
-              min={1}
-              value={newEntry.maxDepth ?? ''}
-              onChange={(event) => setNewEntry({ ...newEntry, maxDepth: event.target.value === '' ? undefined : Number(event.target.value) })}
-              style={{ ...inputStyle, flex: 'none', width: 84 }}
-            />
-          </div>
-          <div style={{ ...colStyle, flex: 1 }}>
-            <span style={labelStyle}>禁用工具</span>
-            <input
-              value={(newEntry.toolFilter?.deny ?? []).join(', ')}
-              onChange={(event) => {
-                const deny = event.target.value.split(',').map((item) => item.trim()).filter(Boolean)
-                const allow = newEntry.toolFilter?.allow
-                setNewEntry({
-                  ...newEntry,
-                  toolFilter: (allow !== undefined && allow.length > 0) || deny.length > 0
-                    ? {
-                        ...(allow !== undefined && allow.length > 0 ? { allow } : {}),
-                        ...(deny.length > 0 ? { deny } : {}),
-                      }
-                    : undefined,
-                })
-              }}
-              placeholder="write, edit, todo_write, …"
-              style={inputStyle}
-            />
-          </div>
-        </div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-          <div style={{ ...colStyle, flex: 1 }}>
-            <span style={labelStyle}>思考强度</span>
-            <input
-              value={newEntry.reasoningEffort ?? ''}
-              onChange={(event) => setNewEntry({ ...newEntry, reasoningEffort: event.target.value === '' ? undefined : event.target.value.trim() })}
-              placeholder="如 max / high / medium / low（留空随父会话默认）"
-              style={inputStyle}
-            />
-          </div>
-          <div style={fixedColStyle}>
-            <span style={labelStyle}>后台模式</span>
-            <select
-              value={newEntry.backgroundMode ?? 'one-shot'}
-              onChange={(event) => setNewEntry({ ...newEntry, backgroundMode: event.target.value as 'one-shot' | 'continuable' })}
-              style={{ ...inputStyle, flex: 'none', width: 132 }}
-            >
-              <option value="one-shot">one-shot</option>
-              <option value="continuable">continuable</option>
-            </select>
-          </div>
-        </div>
-        <div style={rowStyle}>
-          <span style={labelStyle}>角色提示词</span>
-          <AutoTextarea
-            value={newEntry.persona ?? ''}
-            onChange={(event) => setNewEntry({ ...newEntry, persona: event.target.value })}
-            placeholder="子代理的系统提示词（可选）"
-            style={textareaStyle}
-          />
-        </div>
+          )
+        })}
       </div>
 
       {status !== null && (
-        <div style={status.kind === 'ok' ? okBannerStyle : errorBannerStyle}>
+        <div role="status" aria-live="polite" style={status.kind === 'ok' ? BANNER.ok : BANNER.error}>
           {status.text}
         </div>
       )}
 
-      <div style={hintStyle}>
-        配置存储于名册目录 {view.dir || '~/.dsh/subagents'}（每具名子代理一个 &lt;id&gt;.yaml，可手编、热生效；<code>_</code> 前缀的文件/目录为非名册内容，如 <code>_backups/</code> 备份区）。
+      <details style={S.footer}>
+        <summary style={S.footerSummary}>存储与备份说明</summary>
+        <div style={S.hint}>
+        配置存储于名册目录 <code style={{ fontFamily: MONO }}>{view.dir || '~/.dsh/subagents'}</code>（每具名子代理一个 <code>&lt;id&gt;.yaml</code>，可手编、热生效；<code>_</code> 前缀的文件/目录为非名册内容，如 <code>_backups/</code> 备份区）。
+        让 agent 修改条目前，建议先把原文件复制到 <code>_backups/</code> 里。
         settings.yaml 中的旧 entries 仅作迁移兜底读取，文件优先生效。
-      </div>
+        </div>
+      </details>
     </div>
   )
 }

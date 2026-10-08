@@ -4,6 +4,25 @@
 
 This file documents user-facing changes. Format loosely follows [Keep a Changelog]; versions follow [SemVer].
 
+## [0.3.3] — 2026-10-09
+
+### 变更 / Changed
+
+- **设置页重做为分层折叠卡片**：名称与启用开关、角色描述、模型与 Provider、执行标签各自排布；长名称和路由自动换行，描述最多展示两行，不再与标签争抢宽度。展开后字段按「概述 / 路由与执行 / 工具与提示词」分组，宽面板两列、窄面板单列。
+  - **Reworked Settings as layered, collapsible cards**: identity and enable state, description, model/provider, and execution tags each have their own space. Long names and routes wrap; descriptions show up to two lines without competing with tags. The grouped editor uses two columns in wide panels and one in narrow panels.
+- 设置页新增顶部摘要带（条目 / 启用 / 已停用 / 未保存计数 + 名册目录）、筛选框（匹配 id、描述、模型…）、全部展开 / 收起，以及新增条目的折叠卡。
+  - Added a summary band (entry / enabled / disabled / unsaved counts + roster directory), a filter box (matches id, description, model…), expand/collapse all, and a collapsed add-entry card.
+- 切换启用状态后，折叠卡片直接显示「未保存 / 还原 / 保存修改」；保存后生效，其他条目的未保存草稿继续保留。停用条目排在列表末尾。
+  - Toggling enable state exposes an unsaved badge and Revert / Save changes directly on the collapsed card. Changes take effect on save and other drafts are preserved; disabled entries appear last.
+- 界面使用宿主 `--dsw-alias-*` 主题变量并提供回退；统一间距、字号与标签样式，存储和备份说明移入页尾折叠区。
+  - Host theme tokens with fallbacks support light/dark modes; spacing, typography and tags are consistent, with storage and backup details in a footer disclosure.
+- 字段校验失败时自动展开出错的那一行，便于定位。
+  - A failed field validation now opens the offending row so the problem is visible.
+- 折叠按钮与启用开关使用独立原生控件，补齐字段标签与键盘焦点提示；修复「还原」无法移除新加可选字段的问题。
+  - Separate native disclosure and switch controls improve keyboard operation and field labeling. Revert now removes newly added optional fields.
+- 本次变化限于设置页展示与交互：名册 YAML、委派、迁移、存储位置与 API 均未改动。
+  - Changes are confined to Settings presentation and interaction: roster YAML, delegation, migration, storage location, and the API are unchanged.
+
 ## [0.3.2] — 2026-10-04
 
 ### 变更 / Changed

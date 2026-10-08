@@ -30,8 +30,8 @@ Adding entries needs no hand-written config either: ask the main agent to do it,
 ## Screenshots
 
 <p align="center">
-  <img src="./assets/readme/screenshot-settings.png" width="75%" alt="Subagent Library settings card: edit roster entries visually" /><br>
-  <em>The Subagent Library settings card: visually add, edit, remove, enable or disable entries; configure the model, transport, output limit, depth, denied tools, reasoning effort, background mode and persona.</em>
+  <img src="./assets/readme/screenshot-settings.png" width="75%" alt="Subagent Library settings: layered, collapsible cards and roster filtering" /><br>
+  <em>Cards start collapsed for a quick view of roles, models and execution settings. Filter and expand to edit; enable-state changes take effect after saving.</em>
 </p>
 
 <p align="center">
@@ -161,14 +161,27 @@ npx @deepseek-ai/dsh plugin --profile web add /absolute/path/to/dsh-subagent-lib
 
 ## Settings page
 
-A **Subagent Library** card appears under Settings: visually add/edit/remove entries
-(description / provider / model / subagentProvider transport / maxTokens / denied tools /
-depth / background mode / persona / enable switch), written back to `<id>.yaml` in the
-roster directory, hot-reloaded.
-The add card offers the same fields as an entry card (ID / description / provider / model /
-transport / output cap / denied tools / depth / background mode / persona), so a role is
-fully configured in one step; legacy entries carry a `legacy` badge and are promoted to
-files on save.
+A **Subagent Library** page appears under Settings. **Each entry is a card, closed by
+default**; click its name to open the editor.
+
+- **Layered cards** separate the name and enable switch, a description of up to two lines,
+  the model and provider, and a wrapping group of execution settings. Long names and model
+  routes wrap without squeezing the description or hiding the switch.
+- A **summary band** stays at the top of the page: entry / enabled / disabled / unsaved counts
+  plus the roster directory.
+- A **filter box** matches id, description, model and more; Expand/collapse all helps in a long
+  roster.
+- **Expanded**, fields are grouped as Overview (description) / Routing & execution (provider,
+  model, transport, background mode, reasoning effort, depth, output cap) / Tools & prompt
+  (denied tools, persona), with Revert / Delete / Save at the bottom. Fields use two columns
+  in wider panels and one in narrow panels, with host light/dark themes and keyboard support.
+- Toggling enable state creates a draft. The collapsed card exposes an unsaved badge and
+  Revert / Save changes; the setting takes effect only after saving. Saving one entry does
+  not submit other drafts, and Revert restores the entire saved entry.
+- Disabled entries appear last; entries marked as legacy are promoted to files on save.
+  Storage and backup details are available in a disclosure at the bottom of the page.
+
+Saved changes are written back to `<id>.yaml` in the roster directory and hot-reloaded.
 
 > **Security note:** the roster settings endpoint (`/subagent-library/api`) follows the
 > DSH Web Host's local trust boundary — the plugin itself adds no separate authentication
