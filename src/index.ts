@@ -576,7 +576,7 @@ export function apply(ctx: Context, config: Config) {
         message: `${state.reason}。本 profile 不会把模型路由写进共享名册；未注册的共享 provider 仍不会被调用。`,
       })
     } else {
-      await deleteOrphanOverlays(lib.view.dir, new Set(Object.keys(lib.view.entries)), fsPort())
+      await deleteOrphanOverlays(lib.view.dir, lib.view.listing, lib.view.presentIds, fsPort())
     }
     for (const [id, row] of Object.entries(lib.view.entries)) {
       let overlay = undefined

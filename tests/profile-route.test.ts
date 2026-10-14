@@ -309,6 +309,91 @@ test('an unsafe profile name does not write its route into the shared file', asy
   assert.equal(shared['provider'], 'web-only')
 })
 
+const OVERLAYS = {
+  '/roster/reviewer.yaml': 'description: shared role\nprovider: web-only\nmodel: web-model\n',
+  '/roster/_profiles/desktop/reviewer.yaml': 'provider: desktop-gateway\nmodel: desk\n',
+  '/roster/_profiles/web/reviewer.yaml': 'provider: web-only\nmodel: web-model\n',
+}
+
+function overlayBytes(host: ReturnType<typeof makeHost>): Record<string, string> {
+  return Object.fromEntries(Object.entries(host.fs.files()).filter(([path]) => path.includes('/_profiles/')))
+}
+
+test('a broken roster file does not delete any profile overlay', async () => {
+  const host = makeHost({
+    profileName: 'desktop',
+    llmProviders: ['desktop-gateway'],
+    subagentProviders: ['spawn'],
+    rosterFiles: {
+      ...OVERLAYS,
+      '/roster/reviewer.yaml': 'not: an entry\n',
+    },
+  })
+  const before = overlayBytes(host)
+  const listed = jsonBody(await dispatch(host.web, API_PATH))
+  assert.equal(listed['ok'], true)
+  assert.deepEqual(overlayBytes(host), before)
+})
+
+test('an unreadable roster directory does not delete any profile overlay', async () => {
+  const host = makeHost({
+    profileName: 'desktop',
+    llmProviders: ['desktop-gateway'],
+    subagentProviders: ['spawn'],
+    rosterFiles: OVERLAYS,
+  })
+  const before = overlayBytes(host)
+  const original = host.fs.readdir.bind(host.fs)
+  host.fs.readdir = async (dir) => {
+    if (dir.replaceAll('\\', '/') === '/roster') {
+      throw Object.assign(new Error('EACCES'), { code: 'EACCES' })
+    }
+    return original(dir)
+  }
+  const listed = jsonBody(await dispatch(host.web, API_PATH))
+  assert.equal(listed['ok'], true)
+  assert.deepEqual(overlayBytes(host), before)
+  host.fs.readdir = async (dir) => {
+    if (dir.replaceAll('\\', '/') === '/roster') {
+      throw Object.assign(new Error('EPERM'), { code: 'EPERM' })
+    }
+    return original(dir)
+  }
+  const again = jsonBody(await dispatch(host.web, API_PATH))
+  assert.equal(again['ok'], true)
+  assert.deepEqual(overlayBytes(host), before)
+})
+
+test('an unreadable roster file does not delete any profile overlay', async () => {
+  const host = makeHost({
+    profileName: 'desktop',
+    llmProviders: ['desktop-gateway'],
+    subagentProviders: ['spawn'],
+    rosterFiles: OVERLAYS,
+  })
+  const before = overlayBytes(host)
+  const original = host.fs.readFile.bind(host.fs)
+  host.fs.readFile = async (path) => {
+    const normalized = path.replaceAll('\\', '/')
+    if (normalized === '/roster/reviewer.yaml' || normalized === '/roster/reviewer.yml') {
+      throw Object.assign(new Error('EACCES'), { code: 'EACCES' })
+    }
+    return original(path)
+  }
+  const listed = jsonBody(await dispatch(host.web, API_PATH))
+  assert.equal(listed['ok'], true)
+  assert.deepEqual(overlayBytes(host), before)
+  host.fs.readFile = async (path) => {
+    const normalized = path.replaceAll('\\', '/')
+    if (normalized === '/roster/reviewer.yaml' || normalized === '/roster/reviewer.yml') {
+      throw Object.assign(new Error('EPERM'), { code: 'EPERM' })
+    }
+    return original(path)
+  }
+  await host.tools.get('list_subagents')!.execute({}, { agent: { fake: 'parent' }, signal: new AbortController().signal })
+  assert.deepEqual(overlayBytes(host), before)
+})
+
 test('web still uses the shared route after desktop pins its own', async () => {
   const desktop = makeHost({
     profileName: 'desktop',

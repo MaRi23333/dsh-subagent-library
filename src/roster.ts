@@ -169,6 +169,17 @@ export interface RosterView {
   diagnostics: RosterDiagnostic[]
   /** Stable content hash of the roster rows — the UI write guard. */
   hash: string
+  /**
+   * Whether the roster directory listing itself succeeded.
+   * `unreadable` is not "empty": callers must not treat missing entries as deleted.
+   */
+  listing: 'ok' | 'missing' | 'unreadable'
+  /**
+   * Ids named by a `.yaml`/`.yml` the listing actually returned, including
+   * files that later failed to read or parse. Absence from `entries` is not
+   * absence from disk.
+   */
+  presentIds: ReadonlySet<string>
 }
 
 /**
@@ -336,14 +347,22 @@ export async function loadRoster(options: LoadRosterOptions): Promise<RosterView
   const entries: Record<string, RosterEntry> = {}
 
   let names: string[]
+  let listing: RosterView['listing']
   try {
     names = (await fsp.readdir(options.dir)).slice().sort()
+    listing = 'ok'
   } catch (error) {
-    if (!isEnoent(error)) {
+    if (isEnoent(error)) {
+      listing = 'missing'
+    } else {
+      listing = 'unreadable'
       diagnostics.push({ severity: 'error', message: `名册目录不可读 ${options.dir}：${String(error)}` })
     }
     names = []
   }
+  /** Every roster id the listing named, before read/parse. A failed file is
+   *  still present — overlay cleanup must not treat it as deleted. */
+  const presentIds = new Set<string>()
 
   const owner = new Map<string, string>()
   /** Ids whose FILE exists but failed to load. If a legacy copy then serves
@@ -359,6 +378,7 @@ export async function loadRoster(options: LoadRosterOptions): Promise<RosterView
     // directory agents use for pre-edit copies, `_draft.yaml`, …) — skipped
     // silently, never reported as diagnostics noise.
     if (id.startsWith('_')) continue
+    presentIds.add(id)
     if (lower !== name) {
       diagnostics.push({ severity: 'warning', file: name, id, message: `文件名必须全小写，已跳过 "${name}"` })
       continue
@@ -418,7 +438,7 @@ export async function loadRoster(options: LoadRosterOptions): Promise<RosterView
     entries[id] = { entry, enabled: true, source: 'legacy' }
   }
 
-  return { dir: options.dir, entries, diagnostics, hash: hashEntries(entries) }
+  return { dir: options.dir, entries, diagnostics, hash: hashEntries(entries), listing, presentIds }
 }
 
 export interface MigrationResult {

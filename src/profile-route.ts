@@ -453,21 +453,46 @@ export async function syncProfileRoute(options: {
 }
 
 /**
- * Drop overlay files whose entry is no longer in the roster. A hand-deleted
- * `<id>.yaml` otherwise comes back the next time that id is created.
+ * Both roster spellings are confirmed missing. Any other outcome — the file
+ * exists, or the check itself failed — is not absence. A read/parse/permission
+ * error must not be turned into a delete (SUB-PROFILE-SEC-001).
+ */
+async function sharedEntryConfirmedAbsent(rosterDir: string, id: string, fsp: FsPort): Promise<boolean> {
+  for (const name of entryFileNames(id)) {
+    try {
+      await fsp.readFile(nodePath.join(rosterDir, name))
+      return false
+    } catch (error) {
+      if (!isEnoent(error)) return false
+    }
+  }
+  return true
+}
+
+/**
+ * Drop overlay files only when this read proved the shared entry is gone.
+ *
+ * A successful directory listing plus a per-id ENOENT re-check is the only
+ * read-time signal. `unreadable` / `missing` listings, a file that was listed
+ * but failed to read or parse, and any non-ENOENT re-check keep every
+ * profile's overlay bytes. Explicit entry deletion still uses
+ * {@link deleteRouteOverlays}; this function is not that path.
  */
 export async function deleteOrphanOverlays(
   rosterDir: string,
-  liveIds: ReadonlySet<string>,
+  listing: 'ok' | 'missing' | 'unreadable',
+  presentIds: ReadonlySet<string>,
   fsp: FsPort = nodeFsPort,
 ): Promise<void> {
+  if (listing !== 'ok') return
   const root = nodePath.join(rosterDir, PROFILE_ROUTES_DIR)
   let profiles: string[]
   try {
     profiles = await fsp.readdir(root)
   } catch (error) {
     if (isEnoent(error) || isNotDir(error)) return
-    throw error
+    // Cannot see the overlay tree. Do not guess which files are orphans.
+    return
   }
   for (const profile of profiles) {
     if (!isSafeProfileName(profile)) continue
@@ -477,13 +502,16 @@ export async function deleteOrphanOverlays(
       names = await fsp.readdir(dir)
     } catch (error) {
       if (isEnoent(error) || isNotDir(error)) continue
-      throw error
+      // This profile's overlay directory could not be listed. Leave it, and
+      // do not use that failure as a reason to clean any other profile.
+      continue
     }
     for (const name of names) {
       const lower = name.toLowerCase()
       if (!lower.endsWith('.yaml') && !lower.endsWith('.yml')) continue
       const id = lower.endsWith('.yaml') ? lower.slice(0, -5) : lower.slice(0, -4)
-      if (liveIds.has(id)) continue
+      if (presentIds.has(id)) continue
+      if (!await sharedEntryConfirmedAbsent(rosterDir, id, fsp)) continue
       try {
         await fsp.unlink(nodePath.join(dir, name))
       } catch (error) {

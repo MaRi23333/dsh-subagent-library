@@ -8,6 +8,8 @@ This file documents user-facing changes. Format loosely follows [Keep a Changelo
 
 ### 修复 / Fixed
 
+- 读取名册失败（目录不可读、单文件不可读、YAML 损坏）不会删除任何 profile 的路由覆盖。只有目录列出成功、并且复查确认共享文件确实不存在时，才清理对应覆盖；设置页明确删除仍会清理。
+  - A failed roster read (unreadable directory, unreadable file, or broken YAML) does not delete any profile's route overlay. Overlays are removed on read only after a successful listing and a confirmed ENOENT re-check; an explicit settings delete still cleans them.
 - **desktop 与 web 不再共用对方的模型路由**。名册文件仍在 `~/.dsh/subagents/`（角色、提示词、工具范围继续共享），但 `provider` / `model` 按当前 profile 解析：本 profile 没注册的 provider 不再拿去调用，子代理改用本会话的模型；在设置页相对当前显示改过的路由才写到 `_profiles/<profile>/<id>.yaml`。只改描述、或保存时回显被隐藏的外端路由，不会写成 `inherit`，之后本 profile 注册了该 provider 仍会用共享路由。不会改写另一个 profile 的路由。
   - Desktop and web no longer call each other's model routes. Roster files stay in `~/.dsh/subagents/` (role, persona, and tool scope remain shared), but `provider` / `model` resolve against the current profile. A provider that is not registered here is not sent; the child inherits this session's model. Only a route the user changed relative to what this profile displayed is stored in `_profiles/<profile>/<id>.yaml`. Saving a description, or echoing a hidden foreign route, does not pin `inherit`, so a later registration of that provider still uses the shared route. It does not overwrite the other profile's route.
 
