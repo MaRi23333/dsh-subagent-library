@@ -28,6 +28,16 @@ test('parseView defaults every optional field', () => {
   assert.deepEqual(view.entries, {})
   assert.deepEqual(view.diagnostics, [])
   assert.equal(view.hash, '')
+  assert.equal(view.profile, undefined)
+})
+
+test('parseView keeps the current profile so the settings page can say whose models it edits', () => {
+  const view = parseView({
+    profile: 'desktop',
+    entries: { reviewer: { description: 'x', routeNote: 'foreign-ignored' } },
+  })
+  assert.equal(view.profile, 'desktop')
+  assert.equal(view.entries['reviewer']?.routeNote, 'foreign-ignored')
 })
 
 test('409 wire contract: the fresh view rides in `view` and parses cleanly', () => {

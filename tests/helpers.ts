@@ -238,6 +238,10 @@ export interface HostOptions extends SettingsOptions {
   noToolView?: boolean
   /** Subagent transport providers the fake registry knows (default: none). */
   subagentProviders?: string[]
+  /** Current profile name (`ctx.profileContext.name`). Absent keeps shared routes. */
+  profileName?: string
+  /** LLM provider ids registered in this profile. Absent means "cannot tell". */
+  llmProviders?: string[]
 }
 
 export interface MockHost {
@@ -284,11 +288,20 @@ export function makeMemFs(initial: Record<string, string> = {}): MemFs {
   return {
     async readdir(dir) {
       const normalized = normalize(dir)
-      const names = [...files.keys()]
-        .filter((path) => parentOf(path) === normalized)
-        .map((path) => path.slice(normalized.length + 1))
-      if (names.length === 0 && !dirs.has(normalized)) throw enoent()
-      return names
+      const prefix = normalized.endsWith('/') ? normalized : `${normalized}/`
+      const names = new Set<string>()
+      for (const path of files.keys()) {
+        if (!path.startsWith(prefix)) continue
+        const rest = path.slice(prefix.length)
+        if (rest === '') continue
+        const slash = rest.indexOf('/')
+        names.add(slash === -1 ? rest : rest.slice(0, slash))
+      }
+      for (const known of dirs) {
+        if (parentOf(known) === normalized) names.add(known.slice(prefix.length))
+      }
+      if (names.size === 0 && !dirs.has(normalized)) throw enoent()
+      return [...names]
     },
     async readFile(path) {
       const value = files.get(normalize(path))
@@ -395,7 +408,13 @@ export function makeHost(options: HostOptions = {}): MockHost {
         return provider.start(name, request)
       },
     },
-    get: () => undefined,
+    get: (name: string) => {
+      if (name === 'profileContext' && options.profileName !== undefined) return { name: options.profileName }
+      if (name === 'llm' && options.llmProviders !== undefined) {
+        return { listProviders: () => options.llmProviders?.map((id) => ({ id, name: id })) ?? [] }
+      }
+      return undefined
+    },
   }
   // SUB-TEST-001: the plugin must never touch the real disk — the FsPort is
   // injected BEFORE apply() so every roster read/write lands in memory.

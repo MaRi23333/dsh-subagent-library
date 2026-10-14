@@ -67,6 +67,22 @@ import {
   type RosterView,
   type ToolFilter,
 } from './roster.ts'
+import {
+  deleteOrphanOverlays,
+  deleteProfileOverlay,
+  deleteRouteOverlays,
+  hashProfileView,
+  preserveSharedRoute,
+  profilePathProblem,
+  pickRoute,
+  readRouteOverlay,
+  sameRoute,
+  resolveEffectiveEntry,
+  routeBinding,
+  stripRoute,
+  syncProfileRoute,
+  type RouteNote,
+} from './profile-route.ts'
 
 export type { Entry, ToolFilter } from './roster.ts'
 
@@ -151,6 +167,8 @@ type DelegateResult = {
   subagentId?: string
   /** toolFilter names this calling session cannot see, dropped before delegation. */
   droppedTools?: string[]
+  /** Set when this profile did not use the shared file's provider/model. */
+  routeNote?: string
 }
 
 /** One toolFilter name this session cannot apply, with the reason it cannot. */
@@ -485,6 +503,140 @@ export function apply(ctx: Context, config: Config) {
     }
     return { subagentProvider: cfg.subagentProvider, view }
   }
+  /** Launcher-owned profile. Absent hosts keep the shared-file route. An
+   *  unsafe name is still a profile — it must not silently write its route
+   *  into the shared roster. */
+  const currentProfile = ():
+    | { kind: 'absent' }
+    | { kind: 'ready', name: string }
+    | { kind: 'unsafe', name: string, reason: string } => {
+    const profile = ctx.get('profileContext') as { name?: unknown } | undefined
+    const name = profile?.name
+    if (typeof name !== 'string' || name === '') return { kind: 'absent' }
+    const reason = profilePathProblem(name)
+    return reason === undefined ? { kind: 'ready', name } : { kind: 'unsafe', name, reason }
+  }
+  /** Provider ids registered in THIS process. Undefined when the host has no
+   *  `llm` service — a missing list must not be treated as "no providers",
+   *  or every shared route would be dropped. */
+  const registeredProviderIds = (): ReadonlySet<string> | undefined => {
+    const llm = ctx.get('llm') as { listProviders?: () => Array<{ id?: unknown }> } | undefined
+    if (typeof llm?.listProviders !== 'function') return undefined
+    try {
+      const ids = llm.listProviders()
+        .map((item) => item?.id)
+        .filter((id): id is string => typeof id === 'string' && id !== '')
+      return new Set(ids)
+    } catch {
+      return undefined
+    }
+  }
+  interface EffectiveLibrary {
+    subagentProvider: string
+    /** Shared rows. Writers use this, not `view.entries`, so a hidden foreign
+     *  route is not mistaken for an empty route. */
+    raw: RosterView
+    /** Effective entries for this profile. `hash` includes this profile's overlays. */
+    view: RosterView
+    profile?: string
+    /** Set when the profile name cannot store an overlay directory. */
+    profileProblem?: string
+    notes: Record<string, RouteNote>
+    /** Shared-file provider that this profile refused to call. */
+    ignoredProviders: Record<string, string>
+    overlayErrors: Record<string, string>
+    /** Canonical overlay text keyed by id, for the conflict hash. */
+    overlayTexts: Record<string, string>
+    registeredProviders?: readonly string[]
+  }
+  const emptyEffective = (lib: { subagentProvider: string, view: RosterView }): EffectiveLibrary => ({
+    subagentProvider: lib.subagentProvider,
+    raw: lib.view,
+    view: lib.view,
+    notes: {},
+    ignoredProviders: {},
+    overlayErrors: {},
+    overlayTexts: {},
+  })
+  /** Shared roster plus this profile's route. */
+  const loadEffective = async (): Promise<EffectiveLibrary> => {
+    const lib = await loadLibrary()
+    const state = currentProfile()
+    if (state.kind === 'absent') return emptyEffective(lib)
+    const registered = registeredProviderIds()
+    const notes: Record<string, RouteNote> = {}
+    const ignoredProviders: Record<string, string> = {}
+    const overlayErrors: Record<string, string> = {}
+    const overlayTexts: Record<string, string> = {}
+    const entries: Record<string, RosterEntry> = {}
+    const diagnostics = [...lib.view.diagnostics]
+    if (state.kind === 'unsafe') {
+      diagnostics.unshift({
+        severity: 'error',
+        message: `${state.reason}。本 profile 不会把模型路由写进共享名册；未注册的共享 provider 仍不会被调用。`,
+      })
+    } else {
+      await deleteOrphanOverlays(lib.view.dir, new Set(Object.keys(lib.view.entries)), fsPort())
+    }
+    for (const [id, row] of Object.entries(lib.view.entries)) {
+      let overlay = undefined
+      if (state.kind === 'ready') {
+        const read = await readRouteOverlay(lib.view.dir, state.name, id, fsPort())
+        if (!read.ok) {
+          notes[id] = 'overlay-broken'
+          overlayErrors[id] = read.message
+          entries[id] = { ...row, entry: stripRoute(row.entry) }
+          diagnostics.push({ severity: 'error', id, message: read.message })
+          continue
+        }
+        if (read.overlay !== undefined && read.boundHash !== undefined && read.boundHash !== routeBinding(row.entry)) {
+          await deleteProfileOverlay(lib.view.dir, state.name, id, fsPort())
+          diagnostics.push({
+            severity: 'warning',
+            id,
+            message: `profile "${state.name}" 的路由覆盖已失效（共享名册路由已变），已忽略。`,
+          })
+        } else {
+          overlay = read.overlay
+          if (read.text !== undefined && read.overlay !== undefined) overlayTexts[id] = read.text
+        }
+      }
+      const resolved = resolveEffectiveEntry(row.entry, overlay, registered)
+      notes[id] = resolved.note
+      entries[id] = { ...row, entry: resolved.entry }
+      if (resolved.note === 'foreign-ignored' && row.entry.provider !== undefined) {
+        ignoredProviders[id] = row.entry.provider
+      }
+    }
+    const hash = state.kind === 'ready'
+      ? hashProfileView(lib.view.hash, state.name, overlayTexts)
+      : lib.view.hash
+    return {
+      subagentProvider: lib.subagentProvider,
+      raw: lib.view,
+      view: { ...lib.view, entries, diagnostics, hash },
+      ...(state.kind === 'ready' ? { profile: state.name } : { profile: state.name, profileProblem: state.reason }),
+      notes,
+      ignoredProviders,
+      overlayErrors,
+      overlayTexts,
+      ...(registered === undefined ? {} : { registeredProviders: [...registered] }),
+    }
+  }
+  const routeNoteText = (lib: EffectiveLibrary, id: string): string | undefined => {
+    const note = lib.notes[id]
+    const profile = lib.profile ?? 'this profile'
+    if (note === 'foreign-ignored') {
+      return `provider "${lib.ignoredProviders[id] ?? '?'}" is not registered in profile "${profile}"; this call uses the session model`
+    }
+    if (note === 'profile') return `route is pinned to profile "${profile}"`
+    if (note === 'inherit') return `profile "${profile}" inherits the session model`
+    if (note === 'profile-missing') {
+      return `profile "${profile}" route provider is not registered in this profile`
+    }
+    if (note === 'overlay-broken') return lib.overlayErrors[id]
+    return undefined
+  }
 
   // ── settings page API (own HTTP routes) ────────────────────────────────────
   // The Web gateway only exposes namespaces on its own allowlist
@@ -559,11 +711,12 @@ export function apply(ctx: Context, config: Config) {
 
   /** Wire shape of one roster row for the settings editor: the stored entry
    *  plus the enabled flag when false and a `source` marker for legacy rows. */
-  const wireEntries = (view: RosterView): Record<string, unknown> =>
-    Object.fromEntries(Object.entries(view.entries).map(([id, row]) => [id, {
+  const wireEntries = (lib: EffectiveLibrary): Record<string, unknown> =>
+    Object.fromEntries(Object.entries(lib.view.entries).map(([id, row]) => [id, {
       ...row.entry,
       ...(row.enabled ? {} : { enabled: false }),
       ...(row.source === 'legacy' ? { source: 'legacy' } : {}),
+      ...(lib.notes[id] !== undefined && lib.notes[id] !== 'shared' ? { routeNote: lib.notes[id] } : {}),
     }]))
 
   /** Legacy settings entries currently shadowed by a roster file — the safe
@@ -575,29 +728,39 @@ export function apply(ctx: Context, config: Config) {
     return Object.keys(raw).filter((id) => ENTRY_ID.test(id) && view.entries[id]?.source === 'file')
   }
 
+  const profileRouteWarnings = (lib: EffectiveLibrary): Array<{ severity: 'warning', id: string, message: string }> => {
+    if (lib.profile === undefined) return []
+    return Object.entries(lib.ignoredProviders).map(([id, provider]) => ({
+      severity: 'warning' as const,
+      id,
+      message: `共享名册路由 provider "${provider}" 未在当前 profile "${lib.profile}" 注册，调用将改用本会话模型。在此填写的 Provider/模型只保存到这个 profile。`,
+    }))
+  }
   const wireView = async (
     legacySkipWarning = false,
     /** Extra op-level warnings (e.g. a failed `.yml` sweep) that must reach
      *  the client alongside the roster diagnostics (SUB-COMPAT-017-002). */
     extraWarnings: string[] = [],
   ): Promise<Record<string, unknown>> => {
-    const { view } = await loadLibrary()
+    const lib = await loadEffective()
     const opWarnings = extraWarnings.map((message) => ({ severity: 'warning' as const, message }))
     const diagnostics = [
       ...opWarnings,
       ...(legacySkipWarning
         ? [{ severity: 'warning' as const, message: '设置服务只读：settings 中的旧副本未能同步移除，被删条目可能以旧副本复活' }]
         : []),
-      ...view.diagnostics,
+      ...profileRouteWarnings(lib),
+      ...lib.view.diagnostics,
     ]
     return {
       ok: true,
       writable: true,
-      dir: view.dir,
-      hash: view.hash,
-      entries: wireEntries(view),
+      dir: lib.view.dir,
+      hash: lib.view.hash,
+      ...(lib.profile !== undefined ? { profile: lib.profile } : {}),
+      entries: wireEntries(lib),
       diagnostics,
-      legacyCount: legacyShadowedIds(view).length,
+      legacyCount: legacyShadowedIds(lib.view).length,
     }
   }
 
@@ -652,23 +815,25 @@ export function apply(ctx: Context, config: Config) {
         // posture the old expectedRevision revision had).
         const expectedHash = typeof rawHash === 'string' ? rawHash : undefined
         try {
-          const { view: current } = await loadLibrary()
-          // UI write guard: hash of the rows the editor last saw. A stale hash
-          // gets a 409 whose `view` field carries the fresh roster so the
-          // editor can merge and retry instead of just failing (v0.3.0 design
-          // review, k3-helper; wire shape aligned with the client contract).
-          if (expectedHash !== undefined && expectedHash !== current.hash) {
+          const opened = await loadEffective()
+          const current = opened.raw
+          // UI write guard: hash of the view the editor last saw, including
+          // this profile's route overlays. Another profile's overlay does not
+          // change it. A stale hash gets a 409 whose `view` carries the fresh
+          // roster so the editor can merge and retry.
+          if (expectedHash !== undefined && expectedHash !== opened.view.hash) {
             sendJson(res, 409, {
               ok: false,
               error: 'conflict',
               view: {
                 ok: true,
                 writable: true,
-                dir: current.dir,
-                hash: current.hash,
-                entries: wireEntries(current),
-                diagnostics: current.diagnostics,
-                legacyCount: legacyShadowedIds(current).length,
+                dir: opened.view.dir,
+                hash: opened.view.hash,
+                ...(opened.profile !== undefined ? { profile: opened.profile } : {}),
+                entries: wireEntries(opened),
+                diagnostics: [...profileRouteWarnings(opened), ...opened.view.diagnostics],
+                legacyCount: legacyShadowedIds(opened.raw).length,
               },
             })
             return
@@ -692,6 +857,7 @@ export function apply(ctx: Context, config: Config) {
               return
             }
             await deleteEntryFile(current.dir, id, fsPort())
+            await deleteRouteOverlays(current.dir, id, fsPort())
             // The id may also exist as a legacy settings copy (imported rows
             // keep their settings document until cleaned) — unset it too; the
             // unset is a no-op when the key is absent.
@@ -718,6 +884,7 @@ export function apply(ctx: Context, config: Config) {
               }
               const payload = { ...(value as Record<string, unknown>) }
               delete payload['source'] // editor provenance marker, not entry data
+              delete payload['routeNote'] // per-profile display marker, not entry data
               try {
                 validated.set(id, parseEntryDocument(payload))
               } catch (error) {
@@ -740,11 +907,30 @@ export function apply(ctx: Context, config: Config) {
             // failed convergence would deadlock with the duplicate-id
             // diagnostic forever (red team #3).
             const sweepWarnings: string[] = []
+            const profileState = currentProfile()
+            if (profileState.kind === 'unsafe') {
+              for (const [id, doc] of validated) {
+                const shown = opened.view.entries[id]?.entry ?? { description: doc.entry.description }
+                if (!sameRoute(pickRoute(doc.entry), pickRoute(shown))) {
+                  sendJson(res, 400, {
+                    ok: false,
+                    error: 'profile-path',
+                    message: `${profileState.reason}。不能把本 profile 的模型路由写进共享名册。`,
+                  })
+                  return
+                }
+              }
+            }
             for (const [id, doc] of validated) {
               const prev = current.entries[id]
+              // A profiled save must not write this profile's provider/model
+              // into the shared file — that is the other profile's route.
+              const sharedDoc = profileState.kind === 'absent'
+                ? doc
+                : { entry: preserveSharedRoute(doc.entry, prev?.entry), enabled: doc.enabled }
               const onCanonicalFile = prev?.source === 'file' && prev.file === entryFileName(id)
               if (onCanonicalFile
-                && serializeEntry(prev.entry, prev.enabled) === serializeEntry(doc.entry, doc.enabled)) {
+                && serializeEntry(prev.entry, prev.enabled) === serializeEntry(sharedDoc.entry, sharedDoc.enabled)) {
                 // Identical canonical row — still sweep a leftover `.yml`
                 // sibling left by a previously failed convergence. A sweep
                 // failure must NOT be silent (SUB-COMPAT-017-002): the save
@@ -755,15 +941,36 @@ export function apply(ctx: Context, config: Config) {
                 } catch (error) {
                   sweepWarnings.push(`条目 "${id}" 的同名 .yml 残留清除失败，冲突诊断会持续到清除成功：${String(error)}`)
                 }
-                continue
+              } else {
+                await writeEntryFile({
+                  dir: current.dir,
+                  id,
+                  entry: sharedDoc.entry,
+                  enabled: sharedDoc.enabled,
+                  fs: fsPort(),
+                })
               }
-              await writeEntryFile({ dir: current.dir, id, entry: doc.entry, enabled: doc.enabled, fs: fsPort() })
+              // Route-only edits do not change the shared file. Still persist
+              // them — otherwise a profile save that only retargets the model
+              // is dropped by the skip-identical continue above.
+              if (profileState.kind === 'ready') {
+                await syncProfileRoute({
+                  dir: current.dir,
+                  profile: profileState.name,
+                  id,
+                  client: doc.entry,
+                  shown: opened.view.entries[id]?.entry ?? { description: doc.entry.description },
+                  shared: prev?.entry,
+                  fs: fsPort(),
+                })
+              }
             }
             const deletedIds: string[] = []
             for (const [id, row] of Object.entries(current.entries)) {
               if (validated.has(id)) continue
               deletedIds.push(id)
               if (row.source === 'file') await deleteEntryFile(current.dir, id, fsPort())
+              await deleteRouteOverlays(current.dir, id, fsPort())
             }
             const unset = await unsetLegacy(deletedIds)
             sendJson(res, 200, await wireView(unset === 'skipped-readonly', sweepWarnings))
@@ -809,7 +1016,8 @@ export function apply(ctx: Context, config: Config) {
     isConcurrencySafe: () => true,
     async execute(_args, exec) {
       if (settingsFailure !== undefined) throw new Error(settingsFailure)
-      const { view } = await loadLibrary()
+      const lib = await loadEffective()
+      const { view } = lib
       const agent = exec.agent
       /** The catalog must not advertise a filter this session cannot apply:
        *  summarize the SANITIZED filter and list what was ignored, so the model
@@ -843,10 +1051,12 @@ export function apply(ctx: Context, config: Config) {
         backgroundMode?: string
         toolFilter?: string
         enabled?: boolean
+        routeNote?: string
         diagnostics?: string[]
       }
       const rows: CatalogRow[] = Object.entries(view.entries).map(([id, row]) => {
         const summary = filterSummary(row)
+        const routeNote = routeNoteText(lib, id)
         return {
           id,
           description: row.entry.description,
@@ -855,6 +1065,7 @@ export function apply(ctx: Context, config: Config) {
           backgroundMode: row.entry.backgroundMode ?? 'one-shot',
           ...(row.enabled ? {} : { enabled: false }),
           ...(summary !== undefined ? { toolFilter: summary } : {}),
+          ...(routeNote !== undefined ? { routeNote } : {}),
         }
       })
       // Roster files that failed to load must be visible to the model too —
@@ -874,7 +1085,7 @@ export function apply(ctx: Context, config: Config) {
 
   ctx.tools.register(defineTool({
     name: 'delegate',
-    description: 'Delegate a task to a named subagent from the subagent library (see list_subagents for available entries and their roles). The child runs on the entry\'s configured model with its role persona and tool scope. Prefer this over ad-hoc subagent calls when a library entry matches the task.',
+    description: 'Delegate a task to a named subagent from the subagent library (see list_subagents for available entries and their roles). The child runs on the entry\'s model when that provider is registered in this profile; a provider that exists only in another profile is not used, and the child inherits this session\'s model instead. Prefer this over ad-hoc subagent calls when a library entry matches the task.',
     parameters: {
       library_id: {
         type: 'string',
@@ -919,9 +1130,12 @@ export function apply(ctx: Context, config: Config) {
             : value.kind === 'foreground'
               ? outputValueText(value.output ?? [])
               : JSON.stringify(value)
+        const routeNote = typeof value.routeNote === 'string' && value.routeNote !== ''
+          ? `\n（${value.routeNote}）`
+          : ''
         return [{
           type: 'text',
-          text: text + (dropped.length > 0
+          text: text + routeNote + (dropped.length > 0
             ? `\n（已忽略本会话不可用的工具名：${dropped.join('；')}）`
             : ''),
         }]
@@ -932,7 +1146,8 @@ export function apply(ctx: Context, config: Config) {
       if (settingsFailure !== undefined) throw new Error(settingsFailure)
       const parent = exec.agent
       if (!parent) throw new Error('delegate tool requires a calling agent (exec.agent was undefined)')
-      const { subagentProvider: defaultProvider, view } = await loadLibrary()
+      const lib = await loadEffective()
+      const { subagentProvider: defaultProvider, view } = lib
       if (!ENTRY_ID.test(args.library_id)) throw new Error(`subagent library entry id "${args.library_id}" is invalid`)
       // Own-property lookup only: a plain-object prototype chain would resolve
       // ids like `constructor` to inherited functions (≠ undefined) and slip
@@ -944,6 +1159,14 @@ export function apply(ctx: Context, config: Config) {
       }
       if (!row.enabled) {
         throw new Error(`delegate: entry "${args.library_id}" is disabled — remove "enabled: false" in its roster file (or re-enable it on the settings page) to delegate to it again`)
+      }
+      const routeNote = routeNoteText(lib, args.library_id)
+      if (lib.notes[args.library_id] === 'overlay-broken') {
+        throw new Error(`delegate: ${routeNote ?? 'profile route file is invalid'}`)
+      }
+      if (lib.notes[args.library_id] === 'profile-missing') {
+        const available = lib.registeredProviders?.join(', ') || 'none'
+        throw new Error(`delegate: profile "${lib.profile}" route for "${args.library_id}" uses provider "${row.entry.provider}", which is not registered in this profile (available: ${available}). Clear Provider on this profile's settings page to use the session model, or set a provider this profile has.`)
       }
       const entry = row.entry
 
@@ -1027,7 +1250,10 @@ export function apply(ctx: Context, config: Config) {
         ...(toolFilter !== undefined ? { toolFilter } : {}),
         ...(maxDepth !== undefined ? { maxDepth } : {}),
       }
-      const droppedNote = droppedTools.length > 0 ? { droppedTools } : {}
+      const droppedNote = {
+        ...(droppedTools.length > 0 ? { droppedTools } : {}),
+        ...(routeNote !== undefined && lib.notes[args.library_id] !== 'profile' ? { routeNote } : {}),
+      }
 
       const runInBackground = args.run_in_background === true || continuable
       if (runInBackground) {
@@ -1085,7 +1311,7 @@ export function apply(ctx: Context, config: Config) {
     order: LIBRARY_SECTION_ORDER,
     text: (context) => ctx.tools.get('list_subagents', context.scope) === undefined
       ? ''
-      : 'Use list_subagents to see the named subagents in the library, then delegate with the delegate tool (library_id + prompt). Library entries run on a fixed model with a role persona; prefer them over ad-hoc subagent calls when an entry matches the task.',
+      : 'Use list_subagents to see the named subagents in the library, then delegate with the delegate tool (library_id + prompt). Library entries run on a fixed model with a role persona; prefer them over ad-hoc subagent calls when an entry matches the task. A roster provider that is not registered in this profile is not called — the child inherits this session\'s model unless this profile has its own route.',
   })
 
   // ── /subagent command: human-facing catalog ────────────────────────────────
@@ -1095,12 +1321,16 @@ export function apply(ctx: Context, config: Config) {
       name: 'subagent',
       description: 'List the subagent library entries',
       handler: async (): Promise<CommandResult> => {
-        const { view } = await loadLibrary()
+        const lib = await loadEffective()
+        const { view } = lib
         const ids = Object.keys(view.entries)
         const lines = ids.map((id) => {
           const row = view.entries[id]
+          const note = lib.notes[id]
           const tags = [
             `${row.entry.provider ?? '默认模型路由'}/${row.entry.model ?? '默认模型'}`,
+            note === 'foreign-ignored' || note === 'inherit' ? '本 profile 会话模型' : '',
+            note === 'profile' ? `profile:${lib.profile}` : '',
             row.entry.backgroundMode === 'continuable' ? '可续聊' : '',
             row.source === 'legacy' ? 'legacy' : '',
             row.enabled ? '' : '已停用',

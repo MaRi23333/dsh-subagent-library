@@ -205,6 +205,7 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
     const clean: StoredEntry = { ...entry }
     // Provenance markers are wire-only and must never land in a roster file.
     delete clean.source
+    delete clean.routeNote
     // `enabled` persists only when explicitly false (true is the default).
     if (clean.enabled === undefined || clean.enabled) delete clean.enabled
     if (clean.provider === '') delete clean.provider
@@ -402,6 +403,12 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
               {item.severity === 'error' ? '错误' : item.severity === 'warning' ? '警告' : '提示'}{item.id !== undefined ? ` [${item.id}]` : ''}：{item.message}
             </div>
           ))}
+        </div>
+      )}
+
+      {view.profile !== undefined && view.profile !== '' && (
+        <div style={BANNER.info}>
+          当前 profile：{view.profile}。这里填写的 Provider / 模型只保存到这个 profile，不会改写另一个 profile 的路由。共享名册里的模型若未在这里注册，调用会改用本会话的模型。
         </div>
       )}
 
@@ -712,7 +719,18 @@ export function LibrarySettings(props: LibrarySettingsProps): React.ReactElement
                   <div style={S.group}>
                     <span style={S.groupTitle}>路由与执行</span>
                     <div className="dsh-library-grid" style={S.grid}>
-                      <Field label="Provider">
+                      <Field
+                        label="Provider"
+                        hint={entry.routeNote === 'foreign-ignored'
+                          ? '共享名册里的路由当前 profile 没有，调用会改用本会话模型。留空保存不会改掉共享路由。'
+                          : entry.routeNote === 'profile'
+                            ? `只保存在 profile ${view.profile ?? ''}`
+                            : entry.routeNote === 'inherit'
+                              ? '本 profile 固定使用会话模型，不跟随共享名册路由'
+                              : entry.routeNote === 'profile-missing'
+                                ? '这个 profile 保存的 Provider 未注册'
+                                : undefined}
+                      >
                         <input value={entry.provider ?? ''} onChange={(event) => patch(id, { provider: event.target.value })} placeholder="deepseek-official / kimi-coding" style={S.input} />
                       </Field>
                       <Field label="模型">

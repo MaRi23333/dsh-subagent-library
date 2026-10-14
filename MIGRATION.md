@@ -140,8 +140,11 @@ npx @deepseek-ai/dsh plugin --profile web add dsh-subagent-library@latest
 **Q：迁移会失败吗？失败了会怎样？**
 单条导出失败只影响那一条（它继续以 legacy 兜底，diagnostics 会说明）；整体故障（如目录不可写）时条目全部走 legacy 兜底且设置页有警告横幅——**下次使用名册时会自动重试，重启 dsh web 也可立即重试**，不需要手工干预。
 
+**Q：desktop 和 web 会不会用到对方的模型？**
+不会再拿对方没在本 profile 注册的 provider 去调用。名册文件仍然共享（角色、提示词、工具范围），模型路由按当前 profile 解析。本 profile 没有该 provider 时，`delegate` 改用本会话模型；在设置页为本 profile 填写的 Provider/模型写在名册目录的 `_profiles/<profile>/<id>.yaml`，不改共享文件里的另一端路由。
+
 **Q：名册目录能换地方吗？**
-能。DSH ≤0.1.6 在 `~/.dsh/settings.yaml` 的 `subagent-library.entriesDir` 设置；DSH ≥0.1.7 在 web profile `cordis.patch.yml` 的 `- id: subagent-library` → `config` 下设置（支持 `~` 与相对路径，相对路径锚定 `~/.dsh`）。
+能。DSH ≤0.1.6 在 `~/.dsh/settings.yaml` 的 `subagent-library.entriesDir` 设置；DSH ≥0.1.7 在**当前 profile** `cordis.patch.yml` 的 `- id: subagent-library` → `config` 下设置（支持 `~` 与相对路径，相对路径锚定 `~/.dsh`）。
 
 **Q：多台机器怎么同步名册？**
 把名册目录纳入你的 dotfiles/git 即可——每条目一个文件，diff 友好。旧配置里的 `entries` 段不建议同步。
@@ -167,7 +170,7 @@ subagent-library:
   # entries: optional legacy 0.2.x map; remove only this key after verification
 ```
 
-**DSH ≥0.1.7:** the web profile's `cordis.patch.yml`, under `config` on `- id: subagent-library`
+**DSH ≥0.1.7:** the current profile's (`web` or `desktop`) `cordis.patch.yml`, under `config` on `- id: subagent-library`. Model routes are per profile: a shared-roster provider that is not registered here is not called, and a route saved on the settings page is stored only for this profile.
 
 ```yaml
 - id: subagent-library

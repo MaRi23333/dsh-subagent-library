@@ -1,6 +1,6 @@
 {
   "name": "dsh-subagent-library",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Named subagent library for DeepSeek Harness: a directory-backed roster of role subagents (one YAML file per agent: model + persona + tool filter), exposed to every session through the list_subagents and delegate tools, a /subagent command, and a Settings page.",
   "keywords": [
     "deepseek-harness",
@@ -64,7 +64,7 @@
   "scripts": {
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/roster.test.ts tests/api.test.ts tests/tools.test.ts tests/client.test.ts",
+    "test": "tsx --test tests/roster.test.ts tests/api.test.ts tests/tools.test.ts tests/client.test.ts tests/profile-route.test.ts",
     "smoke": "node scripts/smoke-host.mjs && node scripts/smoke-client.mjs",
     "check:pack": "node scripts/check-pack.mjs",
     "prepack": "pnpm run build"

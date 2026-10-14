@@ -35,6 +35,8 @@ export interface StoredEntry {
   enabled?: boolean
   /** Present only for rows still served from the legacy settings document. */
   source?: 'legacy'
+  /** How this profile resolved the model route. Wire-only; never stored. */
+  routeNote?: 'profile' | 'inherit' | 'foreign-ignored' | 'profile-missing' | 'overlay-broken'
 }
 
 export interface LibraryDiagnostic {
@@ -55,6 +57,8 @@ export interface LibraryView {
   /** Legacy settings copies currently shadowed by a roster file — the safe
    *  one-click cleanup set for the 0.2→0.3 transition. */
   legacyCount?: number
+  /** Profile this view was resolved for (`desktop`, `web`, …). */
+  profile?: string
 }
 
 export type LibraryWrite =
@@ -81,6 +85,7 @@ const ERROR_TEXT: Record<string, string> = {
   'unknown-op': '未知操作。',
   'roster-unreadable': '名册目录读取失败。',
   'write-failed': '名册文件写入失败。',
+  'profile-path': '当前 profile 名称不能保存独立模型路由。',
 }
 
 interface WireView {
@@ -91,6 +96,7 @@ interface WireView {
   entries?: Record<string, StoredEntry>
   diagnostics?: LibraryDiagnostic[]
   legacyCount?: number
+  profile?: string
   error?: string
   message?: string
   view?: WireView
@@ -107,6 +113,7 @@ export const parseView = (value: WireView): LibraryView => ({
   // MUST be mapped explicitly: this drives the migration banner + clear button
   // (k3 review round 2 finding #1 — a dropped field here killed the feature).
   legacyCount: value.legacyCount ?? 0,
+  ...(typeof value.profile === 'string' && value.profile !== '' ? { profile: value.profile } : {}),
 })
 
 async function readView(): Promise<LibraryView> {

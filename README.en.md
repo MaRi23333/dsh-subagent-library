@@ -71,7 +71,7 @@ subagent-library:
   # fallback throughout 0.3.x — files win; removal planned for 0.4
 ```
 
-**DSH ≥0.1.7:** edit the web profile's `cordis.patch.yml`, under `config` on its `- id: subagent-library` entry.
+**DSH ≥0.1.7:** edit the **current profile's** (`web` or `desktop`) `cordis.patch.yml`, under `config` on its `- id: subagent-library` entry. Desktop and web do not call each other's model routes: a shared-roster `provider` that is not registered in the current profile is not used, and the child inherits this session's model. Provider/model saved on the settings page is stored for the current profile only.
 
 ```yaml
 - id: subagent-library

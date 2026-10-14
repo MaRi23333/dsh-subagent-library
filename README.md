@@ -77,7 +77,7 @@ subagent-library:
   # entries:（可选，遗留）0.2.x 的内联名册在 0.3.x 仍只读兜底，文件优先生效；0.4 移除
 ```
 
-**DSH ≥0.1.7：**编辑 web profile 的 `cordis.patch.yml`，在 `- id: subagent-library` 的 `config` 下配置。
+**DSH ≥0.1.7：**编辑**当前 profile**（`web` 或 `desktop`）的 `cordis.patch.yml`，在 `- id: subagent-library` 的 `config` 下配置。desktop 与 web 的模型路由互不影响：共享名册里的 `provider` 若未在当前 profile 注册，调用会改用本会话模型；设置页保存的 Provider/模型只写入当前 profile。
 
 ```yaml
 - id: subagent-library
