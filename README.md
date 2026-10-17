@@ -112,8 +112,8 @@ backgroundMode: continuable
 | `reasoningEffort` | 否 | 思考强度：适配器自有值（如 `max` / `high` / `medium` / `low`），留空随父会话默认。走官方 `agentOptions.reasoningEffort` 覆盖通道；子代理换了模型路由时官方会自动丢弃继承值，未显式设置不会跨模型泄漏。只接受 id 形态（字母数字与 `._-`），其他值保存时被拒绝 |
 | `subagentProvider` | 否 | **子代理传输层**（`spawn` 等 `ctx.subagents` provider）；默认取插件级默认 `spawn` |
 | `maxTokens` | 否 | 子代理输出上限 |
-| `persona` | 否 | 子代理角色提示词。注意 persona 走严格的 `{{…}}` 模板插值（与部署 persona 同语义）——出现未注册的变量（如 `{{user}}`）会让子代理激活失败 |
-| `toolFilter` | 否 | `allow`/`deny` 工具名单（只读角色用 deny 禁写类工具）。**只读/受限角色建议把 `list_subagents`/`delegate` 也列入 deny**，防止子代理被全局提示词教去链式再派活。名单在**委派时按调用方会话的可限制集合**解析（不是"可见"）：不可应用的名字被忽略，并在派活结果与 `list_subagents` 目录里标注原因（`本会话不存在` / `本会话专属工具`）——共享条目不会因为某个会话缺该工具而整次派活失败。**`allow` 名单若在本会话全部不可应用则拒绝委派**（否则"只留这些"会变成"什么都不留"）。旧注册表无 `view()` 时退回可见性判定，此时 scope-local 名仍会让委派明确报错。保存阶段不做校验 |
+| `persona` | 否 | 子代理角色提示词。**DSH ≤0.2.0 宿主**：作为系统 persona 部署，走严格的 `{{…}}` 模板插值（与部署 persona 同语义）——出现未注册的变量（如 `{{user}}`）会让子代理激活失败。**DSH ≥0.2.1 宿主**：启动请求已无 persona 字段，角色以 `Role persona:` 前缀折叠进首条任务消息——首轮生效，但不遮蔽部署 persona；续聊回合与上下文压缩后不保证角色仍在；`{{…}}` 不再插值（原文拼接）。不采用独立 `agentPreset` 承载角色：独立 preset 会替换父 preset 组合、丢掉父会话工具 |
+| `toolFilter` | 否 | `allow`/`deny` 工具名单（只读角色用 deny 禁写类工具）。**只读/受限角色建议把 `list_subagents`/`delegate` 也列入 deny**，防止子代理被全局提示词教去链式再派活。名单在**委派时按调用方会话的可限制集合**解析（不是"可见"）：不可应用的名字被忽略，并在派活结果与 `list_subagents` 目录里标注原因（`本会话不存在` / `本会话专属工具`）——共享条目不会因为某个会话缺该工具而整次派活失败。**`allow` 名单若在本会话全部不可应用则拒绝委派**（否则"只留这些"会变成"什么都不留"）。旧注册表无 `view()` 时退回可见性判定，此时 scope-local 名仍会让委派明确报错。保存阶段不做校验。**DSH ≥0.2.1 宿主无法强制执行逐条目工具过滤**：带 `toolFilter` 的条目会被委派直接拒绝（目录标注「无法强制执行」，保存时附警告）；这类条目只适用于 ≤0.2.0 宿主 |
 | `maxDepth` | 否 | 委派深度上限；**缺省 = 传输层支持 depthLimit 时默认 3**（与官方 subagent 工具对齐，防链式递归派活；harness 自身无全局深度上限），不支持 depthLimit 的传输层则不设上限 |
 | `backgroundMode` | 否 | `one-shot`（默认，文件中省略）/ `continuable`（可续聊） |
 | `enabled` | 否 | 文件内写 `enabled: false` 停用该条目（目录与设置页仍可见，`delegate` 拒绝派活）；省略或 `true` 为启用 |

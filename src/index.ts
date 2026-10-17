@@ -132,12 +132,53 @@ async function settleStart(start: Promise<SubagentRun>, signal: AbortSignal): Pr
   }
 }
 
+/** DSH ≥0.2.1 replaced the subagent start seam with startActivation. Places
+ *  that must branch on host generation (delegate, catalog, settings API) probe
+ *  the same property so every branch flips together on one host. */
+function isModernSubagentHost(subagents: unknown): boolean {
+  return typeof (subagents as { startActivation?: unknown } | undefined)?.startActivation === 'function'
+}
+
+/** Pass `promise` through unless `signal` aborts first. The losing side is
+ *  silenced: a rejection that arrives after the race was decided resolves an
+ *  already-detached derived promise, and the abort listener is always removed. */
+function raceAbort<T>(promise: Promise<T>, signal: AbortSignal, message: string): Promise<T> {
+  if (signal.aborted) return Promise.reject(new Error(message))
+  return new Promise<T>((resolve, reject) => {
+    let settled = false
+    const onAbort = () => {
+      if (settled) return
+      settled = true
+      signal.removeEventListener('abort', onAbort)
+      reject(new Error(message))
+    }
+    signal.addEventListener('abort', onAbort)
+    void promise.then(
+      (value) => {
+        if (settled) return
+        settled = true
+        signal.removeEventListener('abort', onAbort)
+        resolve(value)
+      },
+      (error: unknown) => {
+        if (settled) return
+        settled = true
+        signal.removeEventListener('abort', onAbort)
+        reject(error)
+      },
+    )
+  })
+}
+
 /** Foreground collection: await the child, dispose the run, map stop reasons.
- *  `run.result` rejection must still release the run (mirrors settleRun). */
-async function settleForegroundRun(run: SubagentRun): Promise<{ kind: 'foreground'; runId: string; output: JsonValue[] }> {
+ *  `run.result` rejection must still release the run (mirrors settleRun).
+ *  A ≥0.2.1 activation signal stops covering the child once the host accepts
+ *  it, so an abort during collection has to dispose here; hosts without
+ *  startActivation keep cancelling through the signal alone. */
+async function settleForegroundRun(run: SubagentRun, signal?: AbortSignal): Promise<{ kind: 'foreground'; runId: string; output: JsonValue[] }> {
   let result: SubagentResult
   try {
-    result = await run.result
+    result = await (signal === undefined ? run.result : raceAbort(run.result, signal, 'delegate: foreground collection aborted'))
   } finally {
     await run.dispose().catch(() => { /* keep the original failure */ })
   }
@@ -907,6 +948,16 @@ export function apply(ctx: Context, config: Config) {
             // failed convergence would deadlock with the duplicate-id
             // diagnostic forever (red team #3).
             const sweepWarnings: string[] = []
+            if (isModernSubagentHost(ctx.subagents)) {
+              // The editor still accepts toolFilter for round-tripping old
+              // files, but this host will refuse to delegate such entries —
+              // warn at save time instead of failing at delegate time only.
+              for (const [id, doc] of validated) {
+                if (doc.entry.toolFilter !== undefined) {
+                  sweepWarnings.push(`条目 "${id}" 带 toolFilter：本宿主（DSH ≥0.2.1）无法强制执行逐条目工具过滤，委派该条目会被拒绝。`)
+                }
+              }
+            }
             const profileState = currentProfile()
             if (profileState.kind === 'unsafe') {
               for (const [id, doc] of validated) {
@@ -993,7 +1044,11 @@ export function apply(ctx: Context, config: Config) {
   // ── model-facing tools ─────────────────────────────────────────────────────
   ctx.tools.register(defineTool({
     name: 'list_subagents',
-    description: 'List the named subagents available in the subagent library: each entry shows its id, role description, provider, model, background mode and tool filter (allow/deny scoping — e.g. deny:[write, edit] marks a read-only role). Call this before delegating so you can pick a matching library_id.',
+    description: 'List the named subagents available in the subagent library: each entry shows its id, role description, provider, model, background mode and tool filter (allow/deny scoping — e.g. deny:[write, edit] marks a read-only role)'
+      + (isModernSubagentHost(ctx.subagents)
+        ? '. On this host (DSH ≥0.2.1) per-entry tool filters cannot be enforced: entries carrying toolFilter are refused at delegate time and marked as undelegable in the listing.'
+        : '')
+      + ' Call this before delegating so you can pick a matching library_id.',
     parameters: {},
     output: {
       schema: {
@@ -1019,9 +1074,12 @@ export function apply(ctx: Context, config: Config) {
       const lib = await loadEffective()
       const { view } = lib
       const agent = exec.agent
+      const modernCatalog = isModernSubagentHost(ctx.subagents)
       /** The catalog must not advertise a filter this session cannot apply:
        *  summarize the SANITIZED filter and list what was ignored, so the model
-       *  sees the same tool scope delegation will actually produce. */
+       *  sees the same tool scope delegation will actually produce. On a host
+       *  without filter enforcement the filter is undelegable outright, so the
+       *  row says so instead of advertising a scope delegation would refuse. */
       const filterSummary = (row: RosterEntry): string | undefined => {
         const entry = row.entry
         if (entry.toolFilter === undefined) return undefined
@@ -1029,6 +1087,7 @@ export function apply(ctx: Context, config: Config) {
           entry.toolFilter.allow !== undefined ? `allow:[${entry.toolFilter.allow.join(', ')}]` : '',
           entry.toolFilter.deny !== undefined ? `deny:[${entry.toolFilter.deny.join(', ')}]` : '',
         ].filter(Boolean).join(' ')
+        if (modernCatalog) return `${declared}（本宿主无法强制执行 toolFilter，委派该条目会被拒绝）`
         if (agent === undefined) return declared
         const { filter, dropped } = sanitizeToolFilter(ctx, entry.toolFilter, agent)
         const effective = filter === undefined
@@ -1199,9 +1258,6 @@ export function apply(ctx: Context, config: Config) {
       const droppedTools = dropped.map((item) => item.reason === 'session-local'
         ? `${item.name}（本会话专属工具，子代本就继承不到）`
         : `${item.name}（本会话不存在）`)
-      if (allowEmptied) {
-        throw new Error(`delegate: entry "${args.library_id}" allow list names no tool this session can apply (${droppedTools.join('; ')}) — refusing to start a child with no tools at all`)
-      }
       // Hosts that expose startActivation (DSH ≥0.2.1) removed startContinuable
       // and the persona/toolFilter start capabilities. Older hosts still take
       // those fields on start/startContinuable.
@@ -1221,14 +1277,25 @@ export function apply(ctx: Context, config: Config) {
           delivery: 'parent' | 'caller'
         }) => Promise<{ childId: string, result: Promise<SubagentResult>, dispose: () => Promise<void> }>
       }
-      const modernHost = typeof subagentHost.startActivation === 'function'
+      const modernHost = isModernSubagentHost(subagentHost)
+      // A modern host cannot enforce per-entry tool filters at all. Refuse
+      // BEFORE the allow-list check: "add the tool names back" would never
+      // make this entry delegable here, so that error would mislead.
+      if (modernHost && entry.toolFilter !== undefined) {
+        throw new Error(`delegate: this host cannot enforce a per-child toolFilter (entry "${args.library_id}"). Remove toolFilter from the roster file, or run on a host that still accepts it.`)
+      }
+      if (allowEmptied) {
+        throw new Error(`delegate: entry "${args.library_id}" allow list names no tool this session can apply (${droppedTools.join('; ')}) — refusing to start a child with no tools at all`)
+      }
+      // The transport enforces depth limits on BOTH host shapes; a modern host
+      // would only re-check later with its own less actionable capability error.
+      if (!continuable && maxDepth !== undefined && !transport.capabilities.depthLimit) {
+        throw new Error(`delegate: transport "${subagentProviderName}" cannot enforce maxDepth (no depthLimit capability)`)
+      }
       // The one-shot capability flags (depthLimit/persona/toolFilter) describe
       // ONLY the old one-shot `start` path. A modern host applies neither flag;
       // a continuable child on an old host is composed by the continuation manager.
       if (!modernHost && !continuable) {
-        if (maxDepth !== undefined && !transport.capabilities.depthLimit) {
-          throw new Error(`delegate: transport "${subagentProviderName}" cannot enforce maxDepth (no depthLimit capability)`)
-        }
         if (entry.persona !== undefined && !transport.capabilities.persona) {
           throw new Error(`delegate: transport "${subagentProviderName}" cannot apply a persona (no persona capability)`)
         }
@@ -1249,9 +1316,6 @@ export function apply(ctx: Context, config: Config) {
       // resolver merges agentOptions over the parent's options and drops an
       // inherited reasoningEffort when the route changes, so an entry that
       // sets neither model nor reasoningEffort keeps the caller's behavior.
-      if (modernHost && entry.toolFilter !== undefined) {
-        throw new Error(`delegate: this host cannot enforce a per-child toolFilter (entry "${args.library_id}"). Remove toolFilter from the roster file, or run on a host that still accepts it.`)
-      }
       // The new start request has no persona field. Deliver the role in the
       // task text so a continuable library entry still runs as that role.
       const promptText = modernHost && entry.persona !== undefined
@@ -1341,16 +1405,34 @@ export function apply(ctx: Context, config: Config) {
           jobId: jobs.start({
             kind: 'subagent',
             label: args.description ?? args.library_id,
-            owner: parent,
+            // dsh-jobs changed owner identity with the ≥0.2.1 wave: hosts that
+            // expose startActivation register `owner` as the calling session's
+            // id, older hosts as the calling Agent itself.
+            owner: modernHost ? parent.session.id : parent,
             run: () => {
               const controller = new AbortController()
+              // A ≥0.2.1 activation signal only rolls the child back BEFORE the
+              // host accepts it; past acceptance the caller owns cancellation
+              // through dispose(). Old-host runs expose the same dispose, so
+              // one path serves both shapes: abort is the pre-acceptance
+              // channel, dispose the post-acceptance one (idempotent on both).
+              let accepted: SubagentRun | undefined
               return {
                 cancel: (reason) => {
                   controller.abort(reason ?? 'background subagent task killed')
+                  void accepted?.dispose().catch(() => { /* settleStart reports the outcome */ })
                 },
                 done: settleStart(begin(controller.signal, 'caller').then((started) => {
                   if (started.run === undefined) throw new Error('delegate: background start returned no run')
-                  return started.run
+                  accepted = started.run
+                  if (controller.signal.aborted) {
+                    // Cancel raced the acceptance boundary: abort() alone no
+                    // longer reaches an accepted child, so dispose here and
+                    // let settleStart report killed via the aborted signal.
+                    void accepted.dispose().catch(() => { /* settleStart reports killed either way */ })
+                    throw new Error('background subagent task killed')
+                  }
+                  return accepted
                 }), controller.signal),
               }
             },
@@ -1361,7 +1443,7 @@ export function apply(ctx: Context, config: Config) {
       const started = await begin(exec.signal, 'caller')
       if (started.run === undefined) throw new Error('delegate: foreground start returned no run')
       return {
-        ...(await settleForegroundRun(started.run)),
+        ...(await settleForegroundRun(started.run, exec.signal)),
         ...droppedNote,
       }
     },

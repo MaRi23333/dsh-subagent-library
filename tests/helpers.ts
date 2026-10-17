@@ -244,6 +244,14 @@ export interface HostOptions extends SettingsOptions {
   profileName?: string
   /** LLM provider ids registered in this profile. Absent means "cannot tell". */
   llmProviders?: string[]
+  /** ≥0.2.1 activation fake: the result promise never settles (foreground abort race). */
+  activationNeverSettles?: boolean
+  /** ≥0.2.1 activation fake: startActivation waits for `host.releaseActivation()`. */
+  activationHold?: boolean
+  /** Provide a fake `ctx.get('jobs')` so background delegation can run. */
+  jobs?: boolean
+  /** Capability overrides merged over the fake transport defaults (e.g. `{ depthLimit: false }`). */
+  providerCapabilities?: Record<string, boolean>
 }
 
 export interface MockHost {
@@ -251,7 +259,19 @@ export interface MockHost {
   tools: Map<string, { name: string; execute: (args: never, exec: never) => Promise<unknown> }>
   settings: MockSettings
   /** Every `subagents.start(provider, request)` the plugin performed. */
-  subagentStarts: Array<{ provider: string, request: Record<string, unknown> }>
+  subagentStarts: Array<{ provider: string, request: Record<string, unknown>, signal?: unknown }>
+  /** Every dispose() the fake subagent runs performed (cancellation coverage). */
+  subagentDisposes: string[]
+  /** Background jobs the fake registry started, with their live handles. */
+  jobStarts: Array<{
+    kind: string
+    label: string
+    owner: unknown
+    cancel: (reason?: string) => void
+    done: Promise<{ status: string, detail?: string }>
+  }>
+  /** Resolves a pending `activationHold` gate (no-op when none is pending). */
+  releaseActivation: () => void
   /** Every scope passed to `tools.view(scope)` — must be the Agent object. */
   toolViewScopes: unknown[]
   /** The in-memory FsPort the plugin was given (assert files written here). */
@@ -348,6 +368,14 @@ export function makeHost(options: HostOptions = {}): MockHost {
   const restrictableTools = new Set(options.restrictableTools ?? options.knownTools ?? [])
   const settings = makeSettings(options)
   const subagentStarts: MockHost['subagentStarts'] = []
+  const subagentDisposes: MockHost['subagentDisposes'] = []
+  const jobStarts: MockHost['jobStarts'] = []
+  let releaseActivationGate: (() => void) | undefined
+  const releaseActivation = (): void => {
+    const gate = releaseActivationGate
+    releaseActivationGate = undefined
+    gate?.()
+  }
   const toolViewScopes: MockHost['toolViewScopes'] = []
   /** The plugin registers TWO settings injects on ≥0.1.7 (seam +
    *  configEditor binding); the mock must fire ALL of them. */
@@ -362,16 +390,22 @@ export function makeHost(options: HostOptions = {}): MockHost {
 
   const providerNames = options.subagentProviders ?? []
   const providers = new Map(providerNames.map((providerName) => [providerName, {
-    capabilities: options.activationApi === true
-      ? { depthLimit: true, agentPreset: true, agentOptions: true, outputSchema: true }
-      : { depthLimit: true, persona: true, toolFilter: true },
-    prepareContinuable: options.activationApi === true ? () => Promise.resolve({}) : undefined,
+    capabilities: {
+      ...(options.activationApi === true
+        ? { depthLimit: true, agentPreset: true, agentOptions: true, outputSchema: true }
+        : { depthLimit: true, persona: true, toolFilter: true }),
+      ...options.providerCapabilities,
+    },
+    prepareContinuable: () => Promise.resolve({}),
     start: (name: string, request: Record<string, unknown>) => {
       subagentStarts.push({ provider: name, request })
       return {
         id: 'fake-run',
         result: Promise.resolve({ stopReason: 'completed', output: [{ type: 'text', text: 'fake child reply' }] }),
-        dispose: () => Promise.resolve(),
+        dispose: () => {
+          subagentDisposes.push('run')
+          return Promise.resolve()
+        },
       }
     },
   }]))
@@ -406,16 +440,27 @@ export function makeHost(options: HostOptions = {}): MockHost {
     subagents: {
       getProvider: (name: string) => providers.get(name),
       list: () => providerNames,
-      // Service-level entry point: old hosts use start(); DSH ≥0.2.1 uses startActivation.
+      // Service-level entry points: old hosts use start()/startContinuable();
+      // DSH ≥0.2.1 uses startActivation(). The fakes record signals and
+      // dispose calls so cancellation behavior is assertable.
       ...(options.activationApi === true
         ? {
-            startActivation: (spec: { provider: string, label: string, request: Record<string, unknown>, delivery: string }) => {
-              subagentStarts.push({ provider: spec.provider, request: { ...spec.request, label: spec.label, delivery: spec.delivery } })
-              return {
+            startActivation: (spec: { provider: string, label: string, request: Record<string, unknown>, delivery: string, signal: AbortSignal }) => {
+              subagentStarts.push({ provider: spec.provider, request: { ...spec.request, label: spec.label, delivery: spec.delivery }, signal: spec.signal })
+              const settle = () => ({
                 childId: 'fake-child',
-                result: Promise.resolve({ stopReason: 'completed', output: [{ type: 'text', text: 'fake child reply' }] }),
-                dispose: () => Promise.resolve(),
-              }
+                result: options.activationNeverSettles === true
+                  ? new Promise<never>(() => { /* never settles: foreground abort race */ })
+                  : Promise.resolve({ stopReason: 'completed', output: [{ type: 'text', text: 'fake child reply' }] }),
+                dispose: () => {
+                  subagentDisposes.push('activation')
+                  return Promise.resolve()
+                },
+              })
+              if (options.activationHold !== true) return settle()
+              return new Promise((resolve) => {
+                releaseActivationGate = () => resolve(settle())
+              })
             },
           }
         : {
@@ -424,12 +469,34 @@ export function makeHost(options: HostOptions = {}): MockHost {
               if (provider === undefined) throw new Error(`fake subagents: no provider "${name}"`)
               return provider.start(name, request)
             },
+            startContinuable: (spec: { provider: string, label: string, request: Record<string, unknown> }) => {
+              const provider = providers.get(spec.provider)
+              if (provider === undefined) throw new Error(`fake subagents: no provider "${spec.provider}"`)
+              subagentStarts.push({ provider: spec.provider, request: spec.request })
+              return Promise.resolve({ childId: 'fake-child' })
+            },
           }),
     },
     get: (name: string) => {
       if (name === 'profileContext' && options.profileName !== undefined) return { name: options.profileName }
       if (name === 'llm' && options.llmProviders !== undefined) {
         return { listProviders: () => options.llmProviders?.map((id) => ({ id, name: id })) ?? [] }
+      }
+      if (name === 'jobs' && options.jobs === true) {
+        return {
+          start: (spec: { kind: string, label: string, owner: unknown, run: () => { cancel: (reason?: string) => void, done: Promise<unknown> } }) => {
+            const handle = spec.run()
+            jobStarts.push({
+              kind: spec.kind,
+              label: spec.label,
+              owner: spec.owner,
+              cancel: handle.cancel,
+              done: handle.done as Promise<{ status: string, detail?: string }>,
+            })
+            void handle.done.catch(() => { /* the test awaits done explicitly */ })
+            return `job-${jobStarts.length}`
+          },
+        }
       }
       return undefined
     },
@@ -449,7 +516,7 @@ export function makeHost(options: HostOptions = {}): MockHost {
     : { settings, effect: (fn: () => unknown) => fn() }
   for (const cb of settingsCbs) cb(sctxFor)
 
-  return { web, tools, settings, forms, applyConfig, subagentStarts, toolViewScopes, fs }
+  return { web, tools, settings, forms, applyConfig, subagentStarts, subagentDisposes, jobStarts, releaseActivation, toolViewScopes, fs }
 }
 
 export interface ReqOptions {

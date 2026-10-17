@@ -10,6 +10,16 @@ This file documents user-facing changes. Format loosely follows [Keep a Changelo
 
 - **适配 DSH ≥0.2.1 的子代理启动接口**。新宿主没有 `startContinuable`，`spawn` / `fork` 也不再声明 `persona` 能力，因此可续聊条目报 `startContinuable is not a function`，改成一次性后又报 `cannot apply a persona`。插件现在在有 `startActivation` 时走该接口；条目的角色提示词写进任务正文。这个宿主不能再强制执行逐条目 `toolFilter`，带该字段的条目会明确拒绝，而不是静默放行。旧宿主仍走 `start` / `startContinuable`。
   - Adapts to the DSH ≥0.2.1 subagent start API. The new host has no `startContinuable`, and `spawn` / `fork` no longer declare a `persona` capability, so continuable entries failed with `startContinuable is not a function` and one-shot entries then failed with `cannot apply a persona`. The plugin uses `startActivation` when that method exists and delivers the entry persona in the task text. This host cannot enforce a per-entry `toolFilter`; entries that set one are refused instead of started unrestricted. Older hosts still use `start` / `startContinuable`.
+- **修复：子代理被接受后取消不再生效（相对 0.3.4 的回归）**。≥0.2.1 的 activation signal 只覆盖发布前回滚，接受后取消归调用方 `dispose()`。现在后台一次性任务的 `cancel` 在 abort 之外同时 `dispose()`（含取消与接受竞态的边界），前台等待与 `exec` 信号竞速、中止即释放子代理并让工具调用响亮失败。
+  - Fixes a regression versus 0.3.4: on ≥0.2.1 the activation signal only rolls the child back before acceptance, and post-acceptance cancellation belongs to the caller's `dispose()`. Background one-shot jobs now dispose on cancel (including the cancel/acceptance race), and foreground collection races the exec signal so an abort disposes the child and fails the tool call loudly.
+- **修复：后台一次性委派在 ≥0.2.1 上无法启动**。`dsh-jobs` 的 `owner` 从调用 Agent 对象改成了调用会话 id，旧形状传入会被 `resolveOwner` 拒绝（`has no live agent`）。插件按宿主代际传 `parent.session.id`（≥0.2.1）或 Agent 本体（旧宿主）。
+  - Fixes background one-shot delegation failing to start on ≥0.2.1: `dsh-jobs` changed the job `owner` from the calling Agent object to the calling session id, so the old shape was rejected by `resolveOwner` (`has no live agent`). The plugin passes `parent.session.id` on ≥0.2.1 and the Agent itself on older hosts.
+- **目录与保存诚实化**：`list_subagents` 的工具描述与条目行在 ≥0.2.1 上明示 toolFilter 条目不可委派；设置页保存这类条目时附加警告，失败不再推迟到委派一刻。
+  - Honest catalog: the `list_subagents` tool description and entry rows mark `toolFilter` entries as undelegable on ≥0.2.1, and saving such entries from the settings page now carries a warning instead of failing only at delegate time.
+- **错误顺序**：≥0.2.1 上 toolFilter 拒绝先于空 allow 名单错误（先修真正的阻断）；depthLimit 传输层守卫对两代宿主都生效。
+  - Error ordering: on ≥0.2.1 the toolFilter refusal precedes the empty-allow-list error (fix the real blocker first), and the transport depthLimit guard applies on both host generations.
+- **已知宿主限制（文档化）**：≥0.2.1 上名册角色只在首条任务消息中，不遮蔽部署 persona，续聊与压缩后不保证仍在；`{{…}}` 模板在该宿主上不再插值。README 双语字段表已按宿主代际分述。
+  - Known host limitation (documented): on ≥0.2.1 a roster persona rides only the first task message, does not shadow a deployment persona, is not guaranteed across continuation turns or compaction, and `{{…}}` templates are not interpolated there. The bilingual README field table now spells out both host generations.
 
 ## [0.3.4] — 2026-10-14
 
