@@ -238,6 +238,8 @@ export interface HostOptions extends SettingsOptions {
   noToolView?: boolean
   /** Subagent transport providers the fake registry knows (default: none). */
   subagentProviders?: string[]
+  /** DSH ≥0.2.1: service exposes startActivation and transports have no persona capability. */
+  activationApi?: boolean
   /** Current profile name (`ctx.profileContext.name`). Absent keeps shared routes. */
   profileName?: string
   /** LLM provider ids registered in this profile. Absent means "cannot tell". */
@@ -360,7 +362,10 @@ export function makeHost(options: HostOptions = {}): MockHost {
 
   const providerNames = options.subagentProviders ?? []
   const providers = new Map(providerNames.map((providerName) => [providerName, {
-    capabilities: { depthLimit: true, persona: true, toolFilter: true },
+    capabilities: options.activationApi === true
+      ? { depthLimit: true, agentPreset: true, agentOptions: true, outputSchema: true }
+      : { depthLimit: true, persona: true, toolFilter: true },
+    prepareContinuable: options.activationApi === true ? () => Promise.resolve({}) : undefined,
     start: (name: string, request: Record<string, unknown>) => {
       subagentStarts.push({ provider: name, request })
       return {
@@ -401,12 +406,25 @@ export function makeHost(options: HostOptions = {}): MockHost {
     subagents: {
       getProvider: (name: string) => providers.get(name),
       list: () => providerNames,
-      // Service-level entry point: the plugin calls ctx.subagents.start(name, request).
-      start: (name: string, request: Record<string, unknown>) => {
-        const provider = providers.get(name)
-        if (provider === undefined) throw new Error(`fake subagents: no provider "${name}"`)
-        return provider.start(name, request)
-      },
+      // Service-level entry point: old hosts use start(); DSH ≥0.2.1 uses startActivation.
+      ...(options.activationApi === true
+        ? {
+            startActivation: (spec: { provider: string, label: string, request: Record<string, unknown>, delivery: string }) => {
+              subagentStarts.push({ provider: spec.provider, request: { ...spec.request, label: spec.label, delivery: spec.delivery } })
+              return {
+                childId: 'fake-child',
+                result: Promise.resolve({ stopReason: 'completed', output: [{ type: 'text', text: 'fake child reply' }] }),
+                dispose: () => Promise.resolve(),
+              }
+            },
+          }
+        : {
+            start: (name: string, request: Record<string, unknown>) => {
+              const provider = providers.get(name)
+              if (provider === undefined) throw new Error(`fake subagents: no provider "${name}"`)
+              return provider.start(name, request)
+            },
+          }),
     },
     get: (name: string) => {
       if (name === 'profileContext' && options.profileName !== undefined) return { name: options.profileName }

@@ -1202,11 +1202,30 @@ export function apply(ctx: Context, config: Config) {
       if (allowEmptied) {
         throw new Error(`delegate: entry "${args.library_id}" allow list names no tool this session can apply (${droppedTools.join('; ')}) — refusing to start a child with no tools at all`)
       }
+      // Hosts that expose startActivation (DSH ≥0.2.1) removed startContinuable
+      // and the persona/toolFilter start capabilities. Older hosts still take
+      // those fields on start/startContinuable.
+      const subagentHost = ctx.subagents as {
+        start?: (name: string, request: SubagentStartRequest) => Promise<SubagentRun>
+        startContinuable?: (spec: {
+          provider: string
+          label: string
+          request: Omit<SubagentStartRequest, 'signal' | 'outputSchema'>
+          signal: AbortSignal
+        }) => Promise<{ childId: string }>
+        startActivation?: (spec: {
+          provider: string
+          label: string
+          request: Omit<SubagentStartRequest, 'label' | 'signal'>
+          signal: AbortSignal
+          delivery: 'parent' | 'caller'
+        }) => Promise<{ childId: string, result: Promise<SubagentResult>, dispose: () => Promise<void> }>
+      }
+      const modernHost = typeof subagentHost.startActivation === 'function'
       // The one-shot capability flags (depthLimit/persona/toolFilter) describe
-      // ONLY the one-shot `start` path; a continuable child is composed by the
-      // continuation manager itself (persona/toolFilter applied on activation,
-      // gated solely by `prepareContinuable`). Skip them for continuable runs.
-      if (!continuable) {
+      // ONLY the old one-shot `start` path. A modern host applies neither flag;
+      // a continuable child on an old host is composed by the continuation manager.
+      if (!modernHost && !continuable) {
         if (maxDepth !== undefined && !transport.capabilities.depthLimit) {
           throw new Error(`delegate: transport "${subagentProviderName}" cannot enforce maxDepth (no depthLimit capability)`)
         }
@@ -1230,6 +1249,14 @@ export function apply(ctx: Context, config: Config) {
       // resolver merges agentOptions over the parent's options and drops an
       // inherited reasoningEffort when the route changes, so an entry that
       // sets neither model nor reasoningEffort keeps the caller's behavior.
+      if (modernHost && entry.toolFilter !== undefined) {
+        throw new Error(`delegate: this host cannot enforce a per-child toolFilter (entry "${args.library_id}"). Remove toolFilter from the roster file, or run on a host that still accepts it.`)
+      }
+      // The new start request has no persona field. Deliver the role in the
+      // task text so a continuable library entry still runs as that role.
+      const promptText = modernHost && entry.persona !== undefined
+        ? `Role persona:\n${entry.persona}\n\nTask:\n${args.prompt}`
+        : args.prompt
       const agentOptions = entry.provider !== undefined || entry.model !== undefined
         || entry.maxTokens !== undefined || entry.reasoningEffort !== undefined
         ? {
@@ -1243,12 +1270,53 @@ export function apply(ctx: Context, config: Config) {
         : undefined
       const request: Omit<SubagentStartRequest, 'signal' | 'outputSchema'> = {
         label: args.description ?? args.library_id,
-        prompt: [{ type: 'text' as const, text: args.prompt }],
+        prompt: [{ type: 'text' as const, text: promptText }],
         parent,
         ...(agentOptions !== undefined ? { agentOptions } : {}),
-        ...(entry.persona !== undefined ? { persona: entry.persona } : {}),
-        ...(toolFilter !== undefined ? { toolFilter } : {}),
+        ...(!modernHost && entry.persona !== undefined ? { persona: entry.persona } : {}),
+        ...(!modernHost && toolFilter !== undefined ? { toolFilter } : {}),
         ...(maxDepth !== undefined ? { maxDepth } : {}),
+      }
+      const begin = async (signal: AbortSignal, delivery: 'parent' | 'caller'): Promise<{
+        childId: string
+        run?: SubagentRun
+      }> => {
+        if (subagentHost.startActivation !== undefined) {
+          const { label, ...task } = request
+          const started = await subagentHost.startActivation({
+            provider: subagentProviderName,
+            label: label ?? args.library_id,
+            request: task,
+            signal,
+            delivery,
+          })
+          return {
+            childId: started.childId,
+            run: {
+              id: started.childId as SubagentRun['id'],
+              result: started.result,
+              localAgent: undefined,
+              dispose: () => started.dispose(),
+            },
+          }
+        }
+        if (continuable) {
+          if (subagentHost.startContinuable === undefined) {
+            throw new Error('delegate: this host has no startContinuable or startActivation')
+          }
+          const started = await subagentHost.startContinuable({
+            provider: subagentProviderName,
+            label: request.label ?? args.library_id,
+            request,
+            signal,
+          })
+          return { childId: started.childId }
+        }
+        if (subagentHost.start === undefined) {
+          throw new Error('delegate: this host has no subagent start or startActivation')
+        }
+        const run = await subagentHost.start(subagentProviderName, { ...request, signal })
+        return { childId: run.id, run }
       }
       const droppedNote = {
         ...(droppedTools.length > 0 ? { droppedTools } : {}),
@@ -1260,12 +1328,7 @@ export function apply(ctx: Context, config: Config) {
         if (continuable) {
           return {
             kind: 'continuable',
-            subagentId: (await ctx.subagents.startContinuable({
-              provider: subagentProviderName,
-              label: args.description ?? args.library_id,
-              request,
-              signal: exec.signal,
-            })).childId,
+            subagentId: (await begin(exec.signal, 'parent')).childId,
             ...droppedNote,
           }
         }
@@ -1285,9 +1348,9 @@ export function apply(ctx: Context, config: Config) {
                 cancel: (reason) => {
                   controller.abort(reason ?? 'background subagent task killed')
                 },
-                done: settleStart(ctx.subagents.start(subagentProviderName, {
-                  ...request,
-                  signal: controller.signal,
+                done: settleStart(begin(controller.signal, 'caller').then((started) => {
+                  if (started.run === undefined) throw new Error('delegate: background start returned no run')
+                  return started.run
                 }), controller.signal),
               }
             },
@@ -1295,11 +1358,10 @@ export function apply(ctx: Context, config: Config) {
           ...droppedNote,
         }
       }
+      const started = await begin(exec.signal, 'caller')
+      if (started.run === undefined) throw new Error('delegate: foreground start returned no run')
       return {
-        ...(await settleForegroundRun(await ctx.subagents.start(subagentProviderName, {
-          ...request,
-          signal: exec.signal,
-        }))),
+        ...(await settleForegroundRun(started.run)),
         ...droppedNote,
       }
     },

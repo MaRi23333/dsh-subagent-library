@@ -428,3 +428,42 @@ test('web still uses the shared route after desktop pins its own', async () => {
     model: 'web-model',
   })
 })
+
+test('DSH startActivation host delegates a continuable persona entry without startContinuable', async () => {
+  const host = makeHost({
+    activationApi: true,
+    subagentProviders: ['spawn'],
+    rosterFiles: {
+      '/roster/ds-sa.yaml': 'description: worker\npersona: stay in role\nbackgroundMode: continuable\n',
+    },
+  })
+  const result = await host.tools.get('delegate')!.execute(
+    { library_id: 'ds-sa', prompt: 'do the task' },
+    { agent: { fake: 'parent' }, signal: new AbortController().signal },
+  ) as { kind?: string, subagentId?: string }
+  assert.equal(result.kind, 'continuable')
+  assert.equal(result.subagentId, 'fake-child')
+  const request = host.subagentStarts[0]?.request
+  assert.equal(request?.['delivery'], 'parent')
+  assert.equal(request?.['persona'], undefined)
+  assert.match(JSON.stringify(request?.['prompt']), /stay in role/)
+  assert.match(JSON.stringify(request?.['prompt']), /do the task/)
+})
+
+test('DSH startActivation host refuses a per-child toolFilter instead of dropping it', async () => {
+  const host = makeHost({
+    activationApi: true,
+    subagentProviders: ['spawn'],
+    rosterFiles: {
+      '/roster/reader.yaml': 'description: reader\npersona: read only\ntoolFilter:\n  deny: [write]\n',
+    },
+  })
+  await assert.rejects(
+    () => host.tools.get('delegate')!.execute(
+      { library_id: 'reader', prompt: 'x' },
+      { agent: { fake: 'parent' }, signal: new AbortController().signal },
+    ),
+    /cannot enforce a per-child toolFilter/,
+  )
+  assert.equal(host.subagentStarts.length, 0)
+})

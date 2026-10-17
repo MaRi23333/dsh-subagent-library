@@ -4,6 +4,13 @@
 
 This file documents user-facing changes. Format loosely follows [Keep a Changelog]; versions follow [SemVer].
 
+## [0.3.5] — 2026-10-17
+
+### 修复 / Fixed
+
+- **适配 DSH ≥0.2.1 的子代理启动接口**。新宿主没有 `startContinuable`，`spawn` / `fork` 也不再声明 `persona` 能力，因此可续聊条目报 `startContinuable is not a function`，改成一次性后又报 `cannot apply a persona`。插件现在在有 `startActivation` 时走该接口；条目的角色提示词写进任务正文。这个宿主不能再强制执行逐条目 `toolFilter`，带该字段的条目会明确拒绝，而不是静默放行。旧宿主仍走 `start` / `startContinuable`。
+  - Adapts to the DSH ≥0.2.1 subagent start API. The new host has no `startContinuable`, and `spawn` / `fork` no longer declare a `persona` capability, so continuable entries failed with `startContinuable is not a function` and one-shot entries then failed with `cannot apply a persona`. The plugin uses `startActivation` when that method exists and delivers the entry persona in the task text. This host cannot enforce a per-entry `toolFilter`; entries that set one are refused instead of started unrestricted. Older hosts still use `start` / `startContinuable`.
+
 ## [0.3.4] — 2026-10-14
 
 ### 修复 / Fixed
