@@ -9,19 +9,19 @@
 <p align="center">
   <img src="https://img.shields.io/github/actions/workflow/status/MaRi23333/dsh-subagent-library/ci.yml?style=flat-square&label=CI" alt="CI" />
   <img src="https://img.shields.io/github/license/MaRi23333/dsh-subagent-library?style=flat-square" alt="License: MIT" />
-  <img src="https://img.shields.io/badge/DeepSeek%20Harness-0.2.0--rc.2-4d6bfe?style=flat-square" alt="DeepSeek Harness 0.2.0-rc.2" />
+  <img src="https://img.shields.io/badge/DeepSeek%20Harness-0.2.1--rc.2-4d6bfe?style=flat-square" alt="DeepSeek Harness 0.2.1-rc.2" />
 </p>
 
 > **English:** dsh-subagent-library is a named subagent roster plugin for the
 > [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web GUI —
-> manage role entries (model / persona / tool filter / depth / background mode)
+> manage role entries (model / role prompt / depth / background mode)
 > from a settings page, hot-reloaded, then let any conversation pick one with
 > `list_subagents` and dispatch work with `delegate`. See
 > [README.en.md](./README.en.md) for the full English version.
 
 ## 简介
 
-DeepSeek Harness 的具名子代理库插件：把常用角色（代码审查、红队、多模态理解……）配成一份持久化的具名子代理名册（模型 + persona + 工具过滤），之后**只需告诉主会话 agent「用 xxx 做这件事」**——模型自己通过两个工具完成选人和派活：
+DeepSeek Harness 的具名子代理库插件：把常用角色（代码审查、红队、多模态理解……）配成一份持久化的具名子代理名册（模型、角色提示词、深度与后台模式），之后**只需告诉主会话 agent「用 xxx 做这件事」**——模型自己通过两个工具完成选人和派活：
 
 - `list_subagents` — 列出名册条目（id / 角色描述 / 模型），模型据此挑选；
 - `delegate` — 按 `library_id` 派活：前台等待、后台 one-shot 任务、或 continuable 可续聊子代理（按条目配置）。
@@ -90,16 +90,16 @@ subagent-library:
 单个条目文件（`k3-reviewer.yaml`）：
 
 ```yaml
-description: Kimi K3-256K 独立只读审核，支持图片视觉走查
+description: Kimi K3-256K 代码审查，支持图片视觉走查
 provider: kimi-coding
 model: k3-256k
 persona: |
   你是运行在 Kimi K3-256K 上的独立审核 agent……
-toolFilter:
-  deny: [write, edit, todo_write, create_goal, update_goal, subagent, subagent_fork, send_message, interrupt_agent, workflow, ralph, list_subagents, delegate]
 maxDepth: 1
 backgroundMode: continuable
 ```
+
+> **DSH 0.2.1 系列的限制**：角色提示词随首条任务消息发送，不是系统级权限约束；逐条目 `toolFilter` 暂不可用，含该字段的条目会拒绝委派。上面的示例因此不含工具过滤，**不保证只读**。有只读或工具隔离需求时，应先在宿主中配置相应权限，不能只靠角色名称或提示词。旧宿主的字段行为见下表。
 
 条目字段：
 
@@ -129,11 +129,9 @@ backgroundMode: continuable
 
 ## 宿主与桌面端兼容
 
-`0.3.1` 已适配 DSH `0.1.7-rc.2` 引入的 SettingsForms 设置机制；开发侧于 2026-09-30 进一步报告，它在 DSH `0.2.0-rc.2` 与同版本桌面客户端中可用。名册仍采用 0.3 系列的目录化存储与原有迁移规则，没有因本次说明更新再次迁移数据。
+**0.3.5 对齐 DSH `0.2.1-rc.2`**：修复可续聊子代理与一次性委派无法启动，以及后台任务取消未能停止子代理的问题。前台一次性、可续聊、后台启动及运行中取消已在该版桌面宿主中复验。角色提示词与工具过滤的限制见上方提示和字段表，完整变化见 [CHANGELOG.md](./CHANGELOG.md)。
 
-**0.3.2** 为插件管理页增加随客户端语言切换的中英文名称与简介，名册和委派行为不变。更新说明见 [CHANGELOG.md](./CHANGELOG.md)。
-
-桌面客户端沿用 Web 插件界面，无需另装桌面专用包。该兼容说明依据维护者使用反馈；模型在线调用仍取决于各 Provider 的配置与服务，不能由设置页可用推断全部模型或跨平台场景已验收。
+桌面客户端沿用 Web 插件界面，无需另装桌面专用包。旧宿主的启动分支仍保留，但本轮实际运行验证以 `0.2.1-rc.2` 为准；模型调用仍取决于各 Provider 的配置与服务。名册目录、profile 路由和迁移规则不变，无需重新迁移。
 
 ## 安装
 

@@ -9,12 +9,12 @@
 <p align="center">
   <img src="https://img.shields.io/github/actions/workflow/status/MaRi23333/dsh-subagent-library/ci.yml?style=flat-square&label=CI" alt="CI" />
   <img src="https://img.shields.io/github/license/MaRi23333/dsh-subagent-library?style=flat-square" alt="License: MIT" />
-  <img src="https://img.shields.io/badge/DeepSeek%20Harness-0.2.0--rc.2-4d6bfe?style=flat-square" alt="DeepSeek Harness 0.2.0-rc.2" />
+  <img src="https://img.shields.io/badge/DeepSeek%20Harness-0.2.1--rc.2-4d6bfe?style=flat-square" alt="DeepSeek Harness 0.2.1-rc.2" />
 </p>
 
 ## Overview
 
-A named subagent roster plugin for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) Web GUI: turn your recurring roles (code review, red team, multimodal understanding…) into a persistent named roster (model + persona + tool filter). Then **just tell the main agent "do this with xxx"** — the model picks and dispatches through two tools by itself:
+A named subagent roster plugin for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) Web GUI: turn your recurring roles (code review, red team, multimodal understanding…) into a persistent named roster with model, role prompt, depth and background-mode settings. Then **just tell the main agent "do this with xxx"** — the model picks and dispatches through two tools by itself:
 
 - `list_subagents` — lists roster entries (id / role description / model) so the model can pick a suitable one;
 - `delegate` — dispatches work by `library_id`: foreground wait, background one-shot, or a continuable (resumable) subagent, per the entry's configuration.
@@ -85,16 +85,16 @@ subagent-library:
 One entry file (`k3-reviewer.yaml`):
 
 ```yaml
-description: Independent read-only review on Kimi K3-256K, with image walkthroughs
+description: Code review on Kimi K3-256K, with image walkthroughs
 provider: kimi-coding
 model: k3-256k
 persona: |
   You are an independent review agent running on Kimi K3-256K…
-toolFilter:
-  deny: [write, edit, todo_write, create_goal, update_goal, subagent, subagent_fork, send_message, interrupt_agent, workflow, ralph, list_subagents, delegate]
 maxDepth: 1
 backgroundMode: continuable
 ```
+
+> **DSH 0.2.1-series limitations:** the role prompt is sent in the first task message, not enforced as a system-level permission boundary. Per-entry `toolFilter` is unavailable, and entries containing it are refused. The example above therefore omits tool filtering and **does not guarantee read-only access**. Configure the required permissions in the host for read-only or tool-isolated work; a role name or prompt alone is not enough. The field table below also covers older hosts.
 
 Entry fields:
 
@@ -124,11 +124,9 @@ The 0.2.8 legacy `entries` fallback is for DSH ≤0.1.6 only; on DSH ≥0.1.7 th
 
 ## Host and desktop compatibility
 
-`0.3.1` adapts to the SettingsForms mechanism introduced in DSH `0.1.7-rc.2`. On 2026-09-30, the development team additionally reported it working with DSH `0.2.0-rc.2` and the desktop client of the same version. The roster retains the 0.3 series directory-backed storage and migration rules; this documentation update does not migrate data again.
+**0.3.5 targets DSH `0.2.1-rc.2`:** fixes startup failures for continuable and one-shot subagents, and cancellation that failed to stop background children. Foreground one-shot, continuable, background startup and cancellation of running jobs have been checked on that desktop host. See the notice and field table above for role-prompt and tool-filter limitations, and [CHANGELOG.md](./CHANGELOG.md) for the full update.
 
-**0.3.2** adds English and Chinese names and descriptions to the plugin manager, following the client language. Roster and delegation behavior are unchanged. See [CHANGELOG.md](./CHANGELOG.md) for update notes.
-
-The desktop client uses the Web plugin UI, so no separate desktop-specific package is needed. This compatibility statement reflects maintainer usage feedback. Online model calls still depend on each provider's configuration and service; a working settings page does not establish acceptance of every model or cross-platform scenario.
+The desktop client uses the Web plugin UI, so no separate desktop-specific package is needed. The legacy start paths remain, but this release's live checks target `0.2.1-rc.2`; model calls still depend on each provider's configuration and service. Roster directories, profile routes and migration rules are unchanged, so no new migration is needed.
 
 ## Install
 

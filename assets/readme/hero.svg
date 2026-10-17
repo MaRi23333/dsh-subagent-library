@@ -27,7 +27,7 @@
   <text x="248" y="192" font-family="'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif"
         font-size="23" fill="#3d4468">DeepSeek Harness 具名子代理库 · 设置页可视化管理</text>
   <text x="248" y="228" font-family="'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif"
-        font-size="16" fill="#7c84a8">list_subagents 选人 · delegate 派活 · 模型 / persona / 工具过滤 / 深度可配</text>
+        font-size="16" fill="#7c84a8">list_subagents 选人 · delegate 派活 · 模型 / 角色提示词 / 深度可配</text>
   <text x="248" y="254" font-family="'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif"
         font-size="16" fill="#7c84a8">named subagent roster for the DSH Web GUI</text>
 
