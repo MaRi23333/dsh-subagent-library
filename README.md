@@ -13,7 +13,7 @@
 </p>
 
 > **English:** dsh-subagent-library is a named subagent roster plugin for the
-> [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web GUI —
+> [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) desktop and Web interfaces —
 > manage role entries (model / role prompt / depth / background mode)
 > from a settings page, hot-reloaded, then let any conversation pick one with
 > `list_subagents` and dispatch work with `delegate`. See
@@ -34,6 +34,116 @@ DeepSeek Harness 的具名子代理库插件：把常用角色（代码审查、
 
 > **从 0.2.x 升级？** 0.3 起名册目录化（一个子代理一个 YAML 文件），旧配置**自动迁移**；确认无误后可按宿主版本清除旧 `entries` 段。配置位置、失败重试和回滚边界见 [MIGRATION.md](./MIGRATION.md)，完整变更见 [CHANGELOG.md](./CHANGELOG.md)。
 
+[安装](#安装) · [第一次委派](#第一次委派) · [配置参考](#配置)
+
+## 宿主与桌面端兼容
+
+**0.3.5 对齐 DSH `0.2.1-rc.2`**：修复可续聊子代理与一次性委派无法启动，以及后台任务取消未能停止子代理的问题。前台一次性、可续聊、后台启动及运行中取消已在该版桌面宿主中复验。角色提示词与工具过滤的限制见[配置](#配置)，完整变化见 [CHANGELOG.md](./CHANGELOG.md)。
+
+桌面客户端沿用 Web 插件界面，无需另装桌面专用包。旧宿主的启动分支仍保留，但本轮实际运行验证以 `0.2.1-rc.2` 为准；模型调用仍取决于各 Provider 的配置与服务。名册目录、profile 路由和迁移规则不变，无需重新迁移。
+
+## 安装
+
+### 桌面客户端（推荐）
+
+桌面客户端与 Web 的插件安装和启用状态各自独立；在 Web 安装不会自动在桌面端启用。桌面图形界面安装无需配置 PATH。
+
+1. 打开桌面客户端，进入侧栏 **插件（Plugins）** → **添加插件（Add plugin）**。
+2. 输入 npm 包名 `dsh-subagent-library@latest` 并安装。
+3. 安装完成后点击 **立即启用（Enable now）**；只关闭安装完成对话框会让插件保持停用。
+4. 仅在界面提示需要重启时，通过应用菜单 **退出（Quit）** 完整退出再重开。关闭窗口可能只是隐藏应用。
+
+启用后可在设置中找到 **子代理库** 页面；页面顶部显示条目计数和名册目录。
+
+<details>
+<summary>备用：使用桌面随附 CLI（Windows / macOS）</summary>
+
+先启动桌面客户端一次以完成初始化。在应用菜单打开 **Manage dsh Command…** → **Install**，注册桌面随附的 `dsh` 命令，再打开新终端；若界面报告 PATH 冲突，先按其提示处理。
+
+通过 **Quit** 完整退出桌面客户端后，使用刚注册的桌面随附 CLI：
+
+```sh
+dsh plugin --profile desktop add dsh-subagent-library@latest
+dsh plugin --profile desktop list
+```
+
+完成后重开桌面客户端。npm 安装的 `dsh` 和 `npx` 不能管理 `desktop` profile。命令注册说明见[官方桌面文档](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.1-rc.2/apps/desktop/README.md#bundled-command-runtime)。
+
+</details>
+
+### Web
+
+以下命令只管理 Web 的插件。使用启动该 Web 实例的同一套、与宿主版本匹配的 `dsh` CLI，从 npm 安装稳定版本：
+
+```sh
+dsh plugin --profile web add dsh-subagent-library@latest
+```
+
+安装后停止当前 `dsh web` 进程，用同一套 CLI 重新运行 `dsh web`，再刷新页面。
+
+其他安装来源：
+
+```sh
+# 从 GitHub 安装（仓库已提交 lib/ 构建产物，安装无需本地构建）
+dsh plugin --profile web add github:MaRi23333/dsh-subagent-library
+
+# 从本地目录安装
+git clone https://github.com/MaRi23333/dsh-subagent-library.git
+cd dsh-subagent-library
+pnpm install && pnpm run build
+dsh plugin --profile web add /absolute/path/to/dsh-subagent-library
+```
+
+> 仓库已提交 `lib/` 构建产物，git 安装无需本地构建；改源码后运行 `pnpm run build` 再重启 Web。
+> 名册（`~/.dsh/subagents/` 下的条目文件）**热生效**，无需重启。
+>
+> **渠道切换**：之前从 GitHub / 本地目录安装、现在想跟随 npm 发布升级时，用 `dsh plugin --profile web add dsh-subagent-library@latest` 显式取 npm 最新版。
+
+## 第一次委派
+
+先确认当前主会话能正常与模型对话。本例沿用该会话的模型，只整理一段给定文字，无需另外配置 Provider 或文件、网页工具。
+
+### 1. 创建最小角色
+
+没有已有名册或旧配置时，列表为空，插件不会自动添加示例角色。
+
+1. 打开 **设置 → 子代理库**。空库会直接显示新增表单；已有条目时点击 **＋ 新增子代理**。
+2. 填写 **ID** 为 `text-helper`，**描述（模型可见）** 为 `整理主会话提供的短文本。`。若该 ID 已存在，换一个未使用的 ID，并同步替换下文示例。
+3. **模型、Provider、角色提示词、禁用工具及其他选填项留空**，**后台模式**保持 `one-shot`，点击 **创建子代理**。这个按钮会直接保存，新条目默认启用，无需再点一次保存。
+
+### 2. 让主会话列出并委派
+
+回到主会话，发送：
+
+```text
+请先调用 list_subagents，确认有 text-helper；然后用 delegate 以前台方式将任务交给它：
+把“苹果、香蕉、梨”按原顺序改成编号列表。只处理这段文字，不调用其他工具。
+拿到子代理结果后转给我。
+```
+
+应看到 `list_subagents` 返回 `text-helper`，随后有一次 `delegate` 调用并返回子代理的编号列表。只有主会话直接回答、没有委派调用，还不能确认流程已经走通。`/subagent` 可以查看名册，但不会代替这次委派。
+
+这次委派仍会调用模型服务；“不调用其他工具”是任务要求，工具权限由宿主控制。DSH 0.2.1 的逐条目 `toolFilter` 暂不可用，角色名或提示词也不是只读权限保证，详见[配置中的限制](#配置)。
+
+### 3. 没走通时先看这几处
+
+- **找不到条目**：确认已点“创建子代理”，在设置页点击“刷新”并检查诊断。若条目已停用，切为“已启用”后保存。
+- **没有这两个工具**：确认插件在当前桌面或 Web 实例中启用，再检查当前会话的工具可用设置。
+- **模型启动失败**：先确认主会话能正常回复；角色的 Provider 与模型均留空。不要把输入框里的灰色示例当成自己的路由；服务端鉴权、额度等错误按实际报错处理。
+
+<details>
+<summary>可选：用 YAML 创建同一个最小角色</summary>
+
+文件方式和上面的界面方式二选一。在设置页显示的名册目录里新建 `text-helper.yaml`（目录不存在时先创建；不要覆盖已有同名条目）：
+
+```yaml
+description: 整理主会话提供的短文本。
+```
+
+ID 来自文件名；其他字段省略即可继承会话模型并默认启用。保存后热生效，无需重启。更多字段见[配置](#配置)。
+
+</details>
+
 ## 界面
 
 <p align="center">
@@ -50,6 +160,21 @@ DeepSeek Harness 的具名子代理库插件：把常用角色（代码审查、
   <img src="./assets/readme/screenshot-roster.png" width="75%" alt="/subagent 输出：具名子代理名册一览" /><br>
   <em>名册输出示例：每个条目一句话角色描述 + 模型路由 + 可续聊标记</em>
 </p>
+
+## 设置页
+
+打开 **设置 → 子代理库**：**每个条目是一张默认收起的卡片**，点击名称展开编辑。
+
+- **分层卡片**：名称与启用开关位于首行，角色描述独占一段（最多两行），模型与 Provider 单独展示；可续聊、思考强度、深度、输出上限、角色提示词与工具限制统一排在下方。长名称和模型路由自动换行，标签不再挤占描述空间。
+- **摘要带**常驻页面顶部：条目 / 启用 / 已停用 / 未保存计数 + 名册目录。
+- **筛选框**匹配 id、描述、模型等，配合 全部展开 / 收起 在长名册里定位。
+- **展开后**字段分组为「概述 / 路由与执行 / 工具与提示词」，宽面板两列、窄面板单列；底部是 还原 / 删除 / 保存。界面随宿主切换明暗主题，并支持键盘操作。
+- 开关修改先保留为草稿：折叠卡片上会出现「未保存」提示和「还原 / 保存修改」，保存后才生效。保存一个条目不会提交其他条目的草稿；还原会完整恢复该条目的已保存配置。
+- 停用条目在列表末尾显示；带「旧版条目」徽标的条目保存时自动晋升为文件。页面底部可展开存储与备份说明。
+
+保存后的改动写回名册目录下的 `<id>.yaml`，热生效。
+
+> **安全提示**：子代理库的设置接口（`/subagent-library/api`）遵循 DSH Web Host 的本地可信边界，插件自身不含独立身份验证层。若将 DSH Web 绑定到局域网 / 公网 / 反向代理，请在外层配置认证与访问控制，不要把该接口暴露给不可信客户端——子代理 persona 与配置可能包含内部工作规则。
 
 ## 配置
 
@@ -126,84 +251,6 @@ backgroundMode: continuable
 
 > 注意区分两个 provider 概念：`provider` 指 LLM 路由（`agentOptions.provider`），
 > `subagentProvider` 指子代理传输层（`ctx.subagents` 注册名，如 `spawn`/`fork`/`acp`）。
-
-## 宿主与桌面端兼容
-
-**0.3.5 对齐 DSH `0.2.1-rc.2`**：修复可续聊子代理与一次性委派无法启动，以及后台任务取消未能停止子代理的问题。前台一次性、可续聊、后台启动及运行中取消已在该版桌面宿主中复验。角色提示词与工具过滤的限制见上方提示和字段表，完整变化见 [CHANGELOG.md](./CHANGELOG.md)。
-
-桌面客户端沿用 Web 插件界面，无需另装桌面专用包。旧宿主的启动分支仍保留，但本轮实际运行验证以 `0.2.1-rc.2` 为准；模型调用仍取决于各 Provider 的配置与服务。名册目录、profile 路由和迁移规则不变，无需重新迁移。
-
-## 安装
-
-### 桌面客户端（推荐）
-
-桌面客户端与 Web 的插件安装和启用状态各自独立；在 Web 安装不会自动在桌面端启用。桌面图形界面安装无需配置 PATH。
-
-1. 打开桌面客户端，进入侧栏 **插件（Plugins）** → **添加插件（Add plugin）**。
-2. 输入 npm 包名 `dsh-subagent-library@latest` 并安装。
-3. 安装完成后点击 **立即启用（Enable now）**；只关闭安装完成对话框会让插件保持停用。
-4. 仅在界面提示需要重启时，通过应用菜单 **退出（Quit）** 完整退出再重开。关闭窗口可能只是隐藏应用。
-
-启用后可在设置中找到 **子代理库** 页面；页面顶部显示条目计数和名册目录。
-
-<details>
-<summary>备用：使用桌面随附 CLI（Windows / macOS）</summary>
-
-先启动桌面客户端一次以完成初始化。在应用菜单打开 **Manage dsh Command…** → **Install**，注册桌面随附的 `dsh` 命令，再打开新终端；若界面报告 PATH 冲突，先按其提示处理。
-
-通过 **Quit** 完整退出桌面客户端后，使用刚注册的桌面随附 CLI：
-
-```sh
-dsh plugin --profile desktop add dsh-subagent-library@latest
-dsh plugin --profile desktop list
-```
-
-完成后重开桌面客户端。npm 安装的 `dsh` 和 `npx` 不能管理 `desktop` profile。命令注册说明见[官方桌面文档](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.1-rc.2/apps/desktop/README.md#bundled-command-runtime)。
-
-</details>
-
-### Web
-
-以下命令只管理 Web 的插件。使用启动该 Web 实例的同一套、与宿主版本匹配的 `dsh` CLI，从 npm 安装稳定版本：
-
-```sh
-dsh plugin --profile web add dsh-subagent-library@latest
-```
-
-安装后停止当前 `dsh web` 进程，用同一套 CLI 重新运行 `dsh web`，再刷新页面。
-
-其他安装来源：
-
-```sh
-# 从 GitHub 安装（仓库已提交 lib/ 构建产物，安装无需本地构建）
-dsh plugin --profile web add github:MaRi23333/dsh-subagent-library
-
-# 从本地目录安装
-git clone https://github.com/MaRi23333/dsh-subagent-library.git
-cd dsh-subagent-library
-pnpm install && pnpm run build
-dsh plugin --profile web add /absolute/path/to/dsh-subagent-library
-```
-
-> 仓库已提交 `lib/` 构建产物，git 安装无需本地构建；改源码后运行 `pnpm run build` 再重启 Web。
-> 名册（`~/.dsh/subagents/` 下的条目文件）**热生效**，无需重启。
->
-> **渠道切换**：之前从 GitHub / 本地目录安装、现在想跟随 npm 发布升级时，用 `dsh plugin --profile web add dsh-subagent-library@latest` 显式取 npm 最新版。
-
-## 设置页
-
-Settings → 设置 里新增「子代理库」页面：**每个条目是一张默认收起的卡片**，点击名称展开编辑。
-
-- **分层卡片**：名称与启用开关位于首行，角色描述独占一段（最多两行），模型与 Provider 单独展示；可续聊、思考强度、深度、输出上限、角色提示词与工具限制统一排在下方。长名称和模型路由自动换行，标签不再挤占描述空间。
-- **摘要带**常驻页面顶部：条目 / 启用 / 已停用 / 未保存计数 + 名册目录。
-- **筛选框**匹配 id、描述、模型等，配合 全部展开 / 收起 在长名册里定位。
-- **展开后**字段分组为「概述 / 路由与执行 / 工具与提示词」，宽面板两列、窄面板单列；底部是 还原 / 删除 / 保存。界面随宿主切换明暗主题，并支持键盘操作。
-- 开关修改先保留为草稿：折叠卡片上会出现「未保存」提示和「还原 / 保存修改」，保存后才生效。保存一个条目不会提交其他条目的草稿；还原会完整恢复该条目的已保存配置。
-- 停用条目在列表末尾显示；带「旧版条目」徽标的条目保存时自动晋升为文件。页面底部可展开存储与备份说明。
-
-保存后的改动写回名册目录下的 `<id>.yaml`，热生效。
-
-> **安全提示**：子代理库的设置接口（`/subagent-library/api`）遵循 DSH Web Host 的本地可信边界，插件自身不含独立身份验证层。若将 DSH Web 绑定到局域网 / 公网 / 反向代理，请在外层配置认证与访问控制，不要把该接口暴露给不可信客户端——子代理 persona 与配置可能包含内部工作规则。
 
 ## 设计说明
 
