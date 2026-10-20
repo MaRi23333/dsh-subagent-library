@@ -130,32 +130,61 @@ The desktop client uses the Web plugin UI, so no separate desktop-specific packa
 
 ## Install
 
-One command, from npm (recommended):
+### Desktop client (recommended)
+
+Desktop and Web have separate plugin installations and activation states; installing for Web does not enable the desktop plugin. The desktop GUI route needs no PATH setup.
+
+1. In the desktop sidebar, open **Plugins** → **Add plugin**.
+2. Enter the npm package name `dsh-subagent-library@latest` and install it.
+3. Click **Enable now** when installation finishes. Closing the completed-install dialog leaves the plugin disabled.
+4. Restart only if the UI asks you to: fully exit with **Quit** in the application menu, then reopen the app. Closing a window may only hide it.
+
+Once enabled, find **Subagent Library** in settings; the top of the page shows entry counts and the roster directory.
+
+<details>
+<summary>Alternative: use the desktop-bundled CLI (Windows / macOS)</summary>
+
+Start the desktop client once to initialize it. In the application menu, open **Manage dsh Command…** → **Install** to register its bundled `dsh` command, then open a new terminal. If the UI reports a PATH conflict, follow its instructions first.
+
+Fully exit the desktop client with **Quit**, then use the newly registered desktop-bundled CLI:
 
 ```sh
-npx @deepseek-ai/dsh plugin --profile web add dsh-subagent-library
+dsh plugin --profile desktop add dsh-subagent-library@latest
+dsh plugin --profile desktop list
 ```
 
-Then **restart `dsh web`** (stop the process, run `dsh web` again) and refresh the page.
+Reopen the desktop client afterwards. An npm-installed `dsh` or `npx` cannot manage the `desktop` profile. See the [official desktop command documentation](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.1-rc.2/apps/desktop/README.md#bundled-command-runtime).
+
+</details>
+
+### Web
+
+These commands manage Web plugins only. Use the same `dsh` CLI that starts your Web instance, matching that host's version, to install the stable release from npm:
+
+```sh
+dsh plugin --profile web add dsh-subagent-library@latest
+```
+
+After installation, stop the running `dsh web` process, start `dsh web` again with the same CLI, and refresh the page.
 
 Other install sources:
 
 ```sh
-# From GitHub (git-hosted plugin; lib/ build artifacts are committed, no local build needed)
-npx @deepseek-ai/dsh plugin --profile web add github:MaRi23333/dsh-subagent-library
+# From GitHub (lib/ build artifacts are committed; no local build needed)
+dsh plugin --profile web add github:MaRi23333/dsh-subagent-library
 
 # From a local checkout
 git clone https://github.com/MaRi23333/dsh-subagent-library.git
 cd dsh-subagent-library
 pnpm install && pnpm run build
-npx @deepseek-ai/dsh plugin --profile web add /absolute/path/to/dsh-subagent-library
+dsh plugin --profile web add /absolute/path/to/dsh-subagent-library
 ```
 
 > The repo commits `lib/` build artifacts, so git installs need no local build; after
-> changing sources run `pnpm run build` and restart.
+> changing sources run `pnpm run build` and restart Web.
 > Roster edits (files under `~/.dsh/subagents/`) are **hot-reloaded** — no restart.
 >
-> **Switching channels** — if you previously installed from GitHub or a local checkout and want npm-release upgrades, re-add with `npx @deepseek-ai/dsh plugin --profile web add dsh-subagent-library@latest` to force the latest npm version.
+> **Switching channels** — if you previously installed from GitHub or a local checkout and want npm-release upgrades, re-add with `dsh plugin --profile web add dsh-subagent-library@latest` to force the latest npm version.
 
 ## Settings page
 

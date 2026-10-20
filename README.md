@@ -135,31 +135,60 @@ backgroundMode: continuable
 
 ## 安装
 
-一条命令，从 npm 安装（推荐）：
+### 桌面客户端（推荐）
+
+桌面客户端与 Web 的插件安装和启用状态各自独立；在 Web 安装不会自动在桌面端启用。桌面图形界面安装无需配置 PATH。
+
+1. 打开桌面客户端，进入侧栏 **插件（Plugins）** → **添加插件（Add plugin）**。
+2. 输入 npm 包名 `dsh-subagent-library@latest` 并安装。
+3. 安装完成后点击 **立即启用（Enable now）**；只关闭安装完成对话框会让插件保持停用。
+4. 仅在界面提示需要重启时，通过应用菜单 **退出（Quit）** 完整退出再重开。关闭窗口可能只是隐藏应用。
+
+启用后可在设置中找到 **子代理库** 页面；页面顶部显示条目计数和名册目录。
+
+<details>
+<summary>备用：使用桌面随附 CLI（Windows / macOS）</summary>
+
+先启动桌面客户端一次以完成初始化。在应用菜单打开 **Manage dsh Command…** → **Install**，注册桌面随附的 `dsh` 命令，再打开新终端；若界面报告 PATH 冲突，先按其提示处理。
+
+通过 **Quit** 完整退出桌面客户端后，使用刚注册的桌面随附 CLI：
 
 ```sh
-npx @deepseek-ai/dsh plugin --profile web add dsh-subagent-library
+dsh plugin --profile desktop add dsh-subagent-library@latest
+dsh plugin --profile desktop list
 ```
 
-然后**重启 dsh web**（关掉终端重新运行 `dsh web`）并刷新页面。
+完成后重开桌面客户端。npm 安装的 `dsh` 和 `npx` 不能管理 `desktop` profile。命令注册说明见[官方桌面文档](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.1-rc.2/apps/desktop/README.md#bundled-command-runtime)。
 
-其他安装方式：
+</details>
+
+### Web
+
+以下命令只管理 Web 的插件。使用启动该 Web 实例的同一套、与宿主版本匹配的 `dsh` CLI，从 npm 安装稳定版本：
 
 ```sh
-# 从 GitHub 安装（git-hosted 插件；仓库已提交 lib/ 构建产物，安装无需本地构建）
-npx @deepseek-ai/dsh plugin --profile web add github:MaRi23333/dsh-subagent-library
+dsh plugin --profile web add dsh-subagent-library@latest
+```
+
+安装后停止当前 `dsh web` 进程，用同一套 CLI 重新运行 `dsh web`，再刷新页面。
+
+其他安装来源：
+
+```sh
+# 从 GitHub 安装（仓库已提交 lib/ 构建产物，安装无需本地构建）
+dsh plugin --profile web add github:MaRi23333/dsh-subagent-library
 
 # 从本地目录安装
 git clone https://github.com/MaRi23333/dsh-subagent-library.git
 cd dsh-subagent-library
 pnpm install && pnpm run build
-npx @deepseek-ai/dsh plugin --profile web add /absolute/path/to/dsh-subagent-library
+dsh plugin --profile web add /absolute/path/to/dsh-subagent-library
 ```
 
-> 仓库已提交 `lib/` 构建产物，git 安装无需本地构建；改源码后运行 `pnpm run build` 再重启即可。
+> 仓库已提交 `lib/` 构建产物，git 安装无需本地构建；改源码后运行 `pnpm run build` 再重启 Web。
 > 名册（`~/.dsh/subagents/` 下的条目文件）**热生效**，无需重启。
 >
-> **渠道切换**：之前从 GitHub / 本地目录安装、现在想跟随 npm 发布升级时，用 `npx @deepseek-ai/dsh plugin --profile web add dsh-subagent-library@latest` 显式取 npm 最新版。
+> **渠道切换**：之前从 GitHub / 本地目录安装、现在想跟随 npm 发布升级时，用 `dsh plugin --profile web add dsh-subagent-library@latest` 显式取 npm 最新版。
 
 ## 设置页
 
