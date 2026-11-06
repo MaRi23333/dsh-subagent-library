@@ -1,6 +1,6 @@
 {
   "name": "dsh-subagent-library",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "Named subagent library for DeepSeek Harness: a directory-backed roster with model, role prompt, depth and background-mode settings, exposed through list_subagents, delegate, a /subagent command and a Settings page.",
   "keywords": [
     "deepseek-harness",

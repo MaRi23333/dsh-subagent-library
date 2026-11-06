@@ -4,6 +4,13 @@
 
 This file documents user-facing changes. Format loosely follows [Keep a Changelog]; versions follow [SemVer].
 
+## [0.3.6] — 2026-11-06
+
+### 修复 / Fixed
+
+- 通过 DSH 0.2.2 的原生设置图标插槽显示子代理库机器人图标，修复新版设置侧栏中的图标回退；尺寸与颜色随宿主显示。
+  - Use the native DSH 0.2.2 settings icon slot to restore the library's robot icon in the updated sidebar, with host-controlled sizing and theme colors.
+
 ## [0.3.5] — 2026-10-17
 
 ### 修复 / Fixed
