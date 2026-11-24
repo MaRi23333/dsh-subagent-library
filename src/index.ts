@@ -1,41 +1,11 @@
-/**
- * dsh-subagent-library: a directory-backed named-subagent library.
- *
- * Since 0.3.0 the roster lives as ONE FILE PER ENTRY (`<id>.yaml`, id = file
- * name) under a roster directory (default `~/.dsh/subagents`, configurable via
- * `subagent-library.entriesDir`), hot-effective with no restart and no cache.
- * Each entry names a role: a model, an optional persona, an optional tool
- * filter, a depth cap and a background mode. The 0.2.x inline
- * `subagent-library.entries` settings document keeps working as a READ-ONLY
- * legacy fallback (files win; a per-entry idempotent migration seeds the
- * directory once) and is scheduled for removal in 0.4.0. The plugin registers
- * two model-facing tools on the HOST plane so every session sees them
- * regardless of agent preset:
- *
- *   - `list_subagents` — the catalog (id + description + model), so the model
- *     can pick an entry instead of guessing that a role exists.
- *   - `delegate` — start one library subagent by `library_id` (foreground,
- *     background one-shot task, or continuable child per the entry).
- *
- * Plus a `/subagent` slash command listing the catalog for humans.
- *
- * Delegation itself goes through the standard `ctx.subagents` seam with the
- * spawn provider (or any provider an entry names), so children keep the
- * harness' ordinary subagent semantics: approval pinned to `never` on
- * delegation, inherited sandbox scope, depth caps, and continuable support
- * where the provider offers it.
- *
- * @module dsh-subagent-library
- */
-
+/** Directory-backed roles and groups, profile model routes, and the library settings API. */
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { defineTool } from '@deepseek-ai/dsh-tools'
-import type { ContentBlock, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
-import type { JsonValue } from '@deepseek-ai/dsh-session'
-import { assertSubagentMaxDepth, settleRun } from '@deepseek-ai/dsh-subagent'
-import type { SubagentResult, SubagentRun, SubagentStartRequest } from '@deepseek-ai/dsh-subagent'
+import { createHash } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
+import { deleteGroup, loadGroups, lockRoster, parseGroup, roleUsages, writeGroup, type Group } from './groups.ts'
+import { registerLibraryTools, roleUnavailable } from './dispatch.ts'
 // NOTE: `@deepseek-ai/dsh-settings` must NOT be value-imported here. DSH
 // 0.1.7 removed the settingsNamespace() VALUE export (type-only remains), and
 // a value import fails the whole module load → the entire plugin 503s
@@ -44,7 +14,6 @@ import type { SubagentResult, SubagentRun, SubagentStartRequest } from '@deepsee
 // This type-only import exists for the cordis `ctx.settings` augmentation on
 // hosts where the type package still declares it — erased at runtime.
 import type {} from '@deepseek-ai/dsh-settings'
-import type { CommandResult } from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import {
   ENTRY_ID,
@@ -64,15 +33,19 @@ import {
   type Entry,
   type FsPort,
   type RosterEntry,
+  type RosterDiagnostic,
   type RosterView,
-  type ToolFilter,
 } from './roster.ts'
 import {
   deleteOrphanOverlays,
+  hasOrphanOverlays,
   deleteProfileOverlay,
   deleteRouteOverlays,
   hashProfileView,
   preserveSharedRoute,
+  parseRouteOverlay,
+  writeRouteOverlay,
+  type RouteOverlay,
   profilePathProblem,
   pickRoute,
   readRouteOverlay,
@@ -80,6 +53,7 @@ import {
   resolveEffectiveEntry,
   routeBinding,
   stripRoute,
+  withRoute,
   syncProfileRoute,
   type RouteNote,
 } from './profile-route.ts'
@@ -89,19 +63,12 @@ export type { Entry, ToolFilter } from './roster.ts'
 export const name = 'subagent-library'
 export const inject = ['subagents', 'tools', 'systemPrompt']
 
-const LIBRARY_SECTION_ORDER = 116.6
-/** Recursion cap applied when an entry omits maxDepth and the transport can
- *  enforce it — the harness itself imposes no global delegation cap
- *  (resolveChildDepth checks only an explicit value), and the official
- *  subagent tool defaults to 3 to keep chained delegation bounded. */
-const DEFAULT_MAX_DEPTH = 3
-
 export interface Config {
   /** Subagent transport provider used when an entry names none. */
   subagentProvider: string
   /** Roster directory holding one `<id>.yaml` per entry. Default `~/.dsh/subagents`. */
   entriesDir?: string
-  /** @deprecated 0.2.x inline roster — read-only legacy fallback in 0.3.x, removal planned for 0.4.0. */
+  /** @deprecated 0.2.x inline roster — retained for migration. */
   entries?: Record<string, Entry>
 }
 
@@ -110,181 +77,6 @@ export const Config: z<Config> = z.object({
   entriesDir: z.string(),
   entries: z.dict(EntrySchema).default({}),
 })
-
-/** Render text blocks from the canonical JSON block array without trusting arbitrary values. */
-function outputValueText(values: readonly JsonValue[]): string {
-  return values
-    .filter((value): value is { type: 'text'; text: string } =>
-      typeof value === 'object' && value !== null && !Array.isArray(value)
-      && value.type === 'text' && typeof value.text === 'string')
-    .map(value => value.text)
-    .join('')
-}
-
-/** Settle pending startup without rejecting the task producer contract. */
-async function settleStart(start: Promise<SubagentRun>, signal: AbortSignal): Promise<{ status: string; detail?: string }> {
-  try {
-    return await settleRun(await start)
-  } catch (error: unknown) {
-    return signal.aborted
-      ? { status: 'killed' }
-      : { status: 'failed', detail: String(error) }
-  }
-}
-
-/** DSH ≥0.2.1 replaced the subagent start seam with startActivation. Places
- *  that must branch on host generation (delegate, catalog, settings API) probe
- *  the same property so every branch flips together on one host. */
-function isModernSubagentHost(subagents: unknown): boolean {
-  return typeof (subagents as { startActivation?: unknown } | undefined)?.startActivation === 'function'
-}
-
-/** Pass `promise` through unless `signal` aborts first. The losing side is
- *  silenced: a rejection that arrives after the race was decided resolves an
- *  already-detached derived promise, and the abort listener is always removed. */
-function raceAbort<T>(promise: Promise<T>, signal: AbortSignal, message: string): Promise<T> {
-  if (signal.aborted) return Promise.reject(new Error(message))
-  return new Promise<T>((resolve, reject) => {
-    let settled = false
-    const onAbort = () => {
-      if (settled) return
-      settled = true
-      signal.removeEventListener('abort', onAbort)
-      reject(new Error(message))
-    }
-    signal.addEventListener('abort', onAbort)
-    void promise.then(
-      (value) => {
-        if (settled) return
-        settled = true
-        signal.removeEventListener('abort', onAbort)
-        resolve(value)
-      },
-      (error: unknown) => {
-        if (settled) return
-        settled = true
-        signal.removeEventListener('abort', onAbort)
-        reject(error)
-      },
-    )
-  })
-}
-
-/** Foreground collection: await the child, dispose the run, map stop reasons.
- *  `run.result` rejection must still release the run (mirrors settleRun).
- *  A ≥0.2.1 activation signal stops covering the child once the host accepts
- *  it, so an abort during collection has to dispose here; hosts without
- *  startActivation keep cancelling through the signal alone. */
-async function settleForegroundRun(run: SubagentRun, signal?: AbortSignal): Promise<{ kind: 'foreground'; runId: string; output: JsonValue[] }> {
-  let result: SubagentResult
-  try {
-    result = await (signal === undefined ? run.result : raceAbort(run.result, signal, 'delegate: foreground collection aborted'))
-  } finally {
-    await run.dispose().catch(() => { /* keep the original failure */ })
-  }
-  if (result.stopReason !== 'completed') {
-    const text = outputValueText(result.output as unknown as JsonValue[])
-    throw new Error(`subagent run ended: ${result.stopReason}${text ? ` — partial output: ${text}` : ''}`)
-  }
-  return { kind: 'foreground', runId: run.id, output: result.output as unknown as JsonValue[] }
-}
-
-/** Minimal structural view of the optional jobs service (dsh-jobs + dsh-tool-jobs). */
-interface JobRunner {
-  start(options: {
-    kind: string
-    label: string
-    owner: unknown
-    run: () => { cancel: (reason?: string) => void; done: Promise<unknown> }
-  }): string
-}
-
-/** Canonical delegate tool result (JsonValue-compatible, no explicit-undefined properties). */
-type DelegateResult = {
-  kind: string
-  runId?: string
-  output?: JsonValue[]
-  jobId?: string
-  subagentId?: string
-  /** toolFilter names this calling session cannot see, dropped before delegation. */
-  droppedTools?: string[]
-  /** Set when this profile did not use the shared file's provider/model. */
-  routeNote?: string
-}
-
-/** One toolFilter name this session cannot apply, with the reason it cannot. */
-interface DroppedToolName {
-  name: string
-  /** `session-local`: visible to the caller but on its OWN layer, so neither
-   *  restrictable nor inherited by children (e.g. the official `subagent` tool
-   *  in DSH 0.1.2-rc.1). `unknown`: nothing in this session knows the name —
-   *  typically a typo or a tool this deployment does not mount. */
-  reason: 'session-local' | 'unknown'
-}
-
-/**
- * Drop toolFilter names the CALLING session cannot restrict.
- *
- * `ctx.tools.restrict` validates against the child's inherited surface (global
- * layer + ancestors) and fails the WHOLE filter on one name it cannot admit —
- * unknown names and scope-local names included. A roster entry is shared by
- * every session, so a fixed deny list breaks delegation in any session whose
- * composition lacks one of the names (real case: deny lists carrying
- * `subagent` — a per-agent scope-local tool in DSH 0.1.2-rc.1 — or tools a
- * preset never mounts). Names outside the caller's restrictable set are dropped
- * (restrict could not have removed them anyway, and the child never inherits
- * the parent's own registrations) and reported in the delegate result instead
- * of failing the whole delegation.
- *
- * Dropping a DENY name can only widen the child (the name was unrestrictable,
- * so the child could never have it removed); dropping every ALLOW name would
- * leave the child with no global tools at all, which is reported separately as
- * `allowEmptied` so the caller can fail loudly instead of starting a crippled
- * child.
- * @param scope - the CALLING AGENT (dsh-tools' scope key), not its Context.
- */
-function sanitizeToolFilter(
-  ctx: Context,
-  filter: ToolFilter | undefined,
-  scope: unknown,
-): { filter: ToolFilter | undefined, dropped: DroppedToolName[], allowEmptied: boolean } {
-  if (filter === undefined) return { filter: undefined, dropped: [], allowEmptied: false }
-  const tools = ctx.tools as unknown as {
-    get(name: string, scope?: unknown): unknown
-    /** Present on dsh-tools' runtime instance; absent from its public types. */
-    view?(scope?: unknown): { restrictableNames?: Set<string> } | undefined
-  }
-  // restrict() admits exactly the child's inherited names, which equal the
-  // caller's own restrictableNames: the child binds to the caller's standing
-  // mount, so both chains are the same. Prefer that exact set and fall back to
-  // visibility only if an older registry lacks `view()` (the fallback keeps
-  // scope-local names, i.e. the pre-0.2.7 loud failure returns on that path).
-  const restrictable = tools.view?.(scope)?.restrictableNames
-  const restrictableName = (name: string): boolean => restrictable !== undefined
-    ? restrictable.has(name)
-    : tools.get(name, scope) !== undefined
-  const keep = (list: string[] | undefined): string[] | undefined => list?.filter(restrictableName)
-  const allow = keep(filter.allow)
-  const deny = keep(filter.deny)
-  const dropped: DroppedToolName[] = [...(filter.allow ?? []), ...(filter.deny ?? [])]
-    .filter((name) => !restrictableName(name))
-    .map((name) => ({
-      name,
-      reason: restrictable !== undefined && tools.get(name, scope) !== undefined ? 'session-local' : 'unknown',
-    }))
-  // Presence is preserved for `allow` — an empty allow list is a deliberate
-  // "the child keeps no global tools" — while an empty deny list is a no-op and
-  // is dropped so a fully sanitized filter does not travel at all.
-  const next: ToolFilter = {
-    ...(allow !== undefined ? { allow } : {}),
-    ...(deny !== undefined && deny.length > 0 ? { deny } : {}),
-  }
-  return {
-    filter: next.allow === undefined && next.deny === undefined ? undefined : next,
-    dropped,
-    allowEmptied: filter.allow !== undefined && filter.allow.length > 0 && allow !== undefined && allow.length === 0,
-  }
-}
 
 export function apply(ctx: Context, config: Config) {
   // ── settings seam: entry config as base, user document hot-reloaded ───────
@@ -504,18 +296,11 @@ export function apply(ctx: Context, config: Config) {
     (ctx as unknown as Record<symbol, unknown>)[kFsPort] as FsPort | undefined ?? nodeFsPort
   let migratedDir: string | undefined
   let migrationFailure: string | undefined
-  /** Seed the roster directory from legacy settings entries — exactly once
-   *  per directory ON SUCCESS. Per-entry idempotent (existing files are never
-   *  touched), and legacy documents are deliberately KEPT in settings as the
-   *  rollback copy for users downgrading the plugin (removal planned 0.4.0).
-   *  A FAILED migration must NOT latch (red team A5): transient FS errors are
-   *  fast-fail and cheap, so every roster read retries until it succeeds —
-   *  otherwise a single AV-lock would silently strand entries on the legacy
-   *  path until 0.4 removes legacy reading. */
-  const ensureMigrated = async (): Promise<void> => {
-    const legacy = resolveConfig().entries ?? {}
+  /** Seed missing files once per directory, retaining the legacy settings.
+   * Retry a partial migration on the next maintenance read. */
+  const ensureMigrated = async (dir: string, cfg: Config): Promise<void> => {
+    const legacy = cfg.entries ?? {}
     if (Object.keys(legacy).length === 0) return
-    const dir = resolveEntriesDir(resolveConfig().entriesDir)
     if (migratedDir === dir) return
     try {
       const result = await migrateLegacyEntries({ dir, legacy, fs: fsPort() })
@@ -523,8 +308,6 @@ export function apply(ctx: Context, config: Config) {
         migratedDir = dir
         migrationFailure = undefined
       } else {
-        // Per-entry write failures must ALSO retry (same strand-until-0.4
-        // trap as a thrown error) — do not latch on a partial migration.
         migrationFailure = `${result.diagnostics.map((item) => item.message).join('；')}（修复后将自动重试）`
       }
     } catch (error) {
@@ -534,11 +317,10 @@ export function apply(ctx: Context, config: Config) {
   /** Fresh roster view for every consumer (tools, command, settings API):
    *  no cache — tens of small files read in milliseconds, and the cache layer
    *  is exactly where mtime/case/rename bugs live (v0.3.0 design review). */
-  const loadLibrary = async (): Promise<{ subagentProvider: string, view: RosterView }> => {
+  const loadLibrary = async (maintain: boolean, cfg: Config, dir: string): Promise<{ subagentProvider: string, view: RosterView }> => {
     if (settingsFailure !== undefined) throw new Error(settingsFailure)
-    const cfg = resolveConfig()
-    await ensureMigrated()
-    const view = await loadRoster({ dir: resolveEntriesDir(cfg.entriesDir), legacy: cfg.entries, fs: fsPort() })
+    if (maintain) await ensureMigrated(dir, cfg)
+    const view = await loadRoster({ dir, legacy: cfg.entries, fs: fsPort() })
     if (migrationFailure !== undefined) {
       view.diagnostics.unshift({ severity: 'warning', message: `旧条目自动迁移未完成：${migrationFailure}` })
     }
@@ -552,8 +334,9 @@ export function apply(ctx: Context, config: Config) {
     | { kind: 'ready', name: string }
     | { kind: 'unsafe', name: string, reason: string } => {
     const profile = ctx.get('profileContext') as { name?: unknown } | undefined
-    const name = profile?.name
-    if (typeof name !== 'string' || name === '') return { kind: 'absent' }
+    if (profile == null) return { kind: 'absent' }
+    const name = profile.name
+    if (typeof name !== 'string' || name === '') return { kind: 'unsafe', name: '', reason: '宿主提供的 profile 缺少名称，无法保存该配置的模型设置。' }
     const reason = profilePathProblem(name)
     return reason === undefined ? { kind: 'ready', name } : { kind: 'unsafe', name, reason }
   }
@@ -573,6 +356,8 @@ export function apply(ctx: Context, config: Config) {
     }
   }
   interface EffectiveLibrary {
+    groups: Record<string, Group>
+    groupDiagnostics: RosterDiagnostic[]
     subagentProvider: string
     /** Shared rows. Writers use this, not `view.entries`, so a hidden foreign
      *  route is not mistaken for an empty route. */
@@ -588,35 +373,36 @@ export function apply(ctx: Context, config: Config) {
     overlayErrors: Record<string, string>
     /** Canonical overlay text keyed by id, for the conflict hash. */
     overlayTexts: Record<string, string>
+    /** A mismatched binding on a readable shared file can be removed under the directory lock. */
+    staleProfileOverlay?: boolean
     registeredProviders?: readonly string[]
   }
-  const emptyEffective = (lib: { subagentProvider: string, view: RosterView }): EffectiveLibrary => ({
-    subagentProvider: lib.subagentProvider,
-    raw: lib.view,
-    view: lib.view,
-    notes: {},
-    ignoredProviders: {},
-    overlayErrors: {},
-    overlayTexts: {},
-  })
-  /** Shared roster plus this profile's route. */
-  const loadEffective = async (): Promise<EffectiveLibrary> => {
-    const lib = await loadLibrary()
+  /** Only the directory lock owner may migrate or clean up overlays. */
+  const readEffective = async (maintain: boolean, cfg: Config, dir: string): Promise<EffectiveLibrary> => {
+    const lib = await loadLibrary(maintain, cfg, dir)
+    const { groups, groupDiagnostics, groupRevision } = await loadGroups(lib.view.dir, fsPort())
+    const sharedHash = createHash('sha256').update(JSON.stringify([
+      dir, lib.view.hash, lib.view.fileRevision, groupRevision,
+    ])).digest('hex').slice(0, 16)
     const state = currentProfile()
-    if (state.kind === 'absent') return emptyEffective(lib)
+    if (state.kind === 'absent') return {
+      ...lib, groups, groupDiagnostics, raw: lib.view, view: { ...lib.view, hash: sharedHash },
+      notes: {}, ignoredProviders: {}, overlayErrors: {}, overlayTexts: {},
+    }
     const registered = registeredProviderIds()
-    const notes: Record<string, RouteNote> = {}
-    const ignoredProviders: Record<string, string> = {}
-    const overlayErrors: Record<string, string> = {}
-    const overlayTexts: Record<string, string> = {}
-    const entries: Record<string, RosterEntry> = {}
+    const notes: Record<string, RouteNote> = Object.create(null)
+    const ignoredProviders: Record<string, string> = Object.create(null)
+    const overlayErrors: Record<string, string> = Object.create(null)
+    const overlayTexts: Record<string, string> = Object.create(null)
+    const entries: Record<string, RosterEntry> = Object.create(null)
     const diagnostics = [...lib.view.diagnostics]
+    let staleProfileOverlay = false
     if (state.kind === 'unsafe') {
       diagnostics.unshift({
         severity: 'error',
         message: `${state.reason}。本 profile 不会把模型路由写进共享名册；未注册的共享 provider 仍不会被调用。`,
       })
-    } else {
+    } else if (maintain) {
       await deleteOrphanOverlays(lib.view.dir, lib.view.listing, lib.view.presentIds, fsPort())
     }
     for (const [id, row] of Object.entries(lib.view.entries)) {
@@ -626,12 +412,16 @@ export function apply(ctx: Context, config: Config) {
         if (!read.ok) {
           notes[id] = 'overlay-broken'
           overlayErrors[id] = read.message
+          if (read.text !== undefined) overlayTexts[id] = read.text
           entries[id] = { ...row, entry: stripRoute(row.entry) }
           diagnostics.push({ severity: 'error', id, message: read.message })
           continue
         }
         if (read.overlay !== undefined && read.boundHash !== undefined && read.boundHash !== routeBinding(row.entry)) {
-          await deleteProfileOverlay(lib.view.dir, state.name, id, fsPort())
+          const readable = row.source === 'file' && !lib.view.diagnostics.some(d => d.id === id && d.severity === 'error')
+          if (readable) staleProfileOverlay = true
+          if (maintain && readable) await deleteProfileOverlay(lib.view.dir, state.name, id, fsPort())
+          else if (read.text !== undefined) overlayTexts[id] = read.text
           diagnostics.push({
             severity: 'warning',
             id,
@@ -649,10 +439,11 @@ export function apply(ctx: Context, config: Config) {
         ignoredProviders[id] = row.entry.provider
       }
     }
-    const hash = state.kind === 'ready'
-      ? hashProfileView(lib.view.hash, state.name, overlayTexts)
-      : lib.view.hash
+    const hash = hashProfileView(sharedHash, state.name, Object.fromEntries(Object.keys(entries).map(id =>
+      [id, JSON.stringify([notes[id], overlayTexts[id], overlayErrors[id]])])))
     return {
+      groups,
+      groupDiagnostics,
       subagentProvider: lib.subagentProvider,
       raw: lib.view,
       view: { ...lib.view, entries, diagnostics, hash },
@@ -661,8 +452,35 @@ export function apply(ctx: Context, config: Config) {
       ignoredProviders,
       overlayErrors,
       overlayTexts,
+      staleProfileOverlay,
       ...(registered === undefined ? {} : { registeredProviders: [...registered] }),
     }
+  }
+  const loadEffective = async (): Promise<EffectiveLibrary> => {
+    const config = resolveConfig()
+    const dir = resolveEntriesDir(config.entriesDir)
+    const opened = await readEffective(false, config, dir)
+    const { listing, presentIds } = opened.raw
+    let needsMaintenance = opened.staleProfileOverlay === true
+    if (dir !== migratedDir && listing !== 'unreadable') {
+      const legacy = Object.keys(config.entries ?? {}).filter(id => !validateEntryId(id))
+      if (legacy.length) {
+        if (legacy.some(id => !presentIds.has(id)) || migrationFailure !== undefined) needsMaintenance = true
+        else migratedDir = dir // Already seeded, including by another host.
+      }
+    }
+    if (!needsMaintenance && opened.profile !== undefined && !opened.profileProblem) {
+      needsMaintenance = await hasOrphanOverlays(dir, listing, presentIds, fsPort())
+    }
+    if (!needsMaintenance) return opened
+    // Re-read under the write lock before migrating or removing anything:
+    // a concurrent writer can create a role or change its overlay after the probe.
+    let unlock
+    try { unlock = await lockRoster(dir, fsPort(), 0) } catch { return opened }
+    try {
+      const latest = resolveConfig()
+      return resolveEntriesDir(latest.entriesDir) === dir ? await readEffective(true, latest, dir) : opened
+    } finally { await unlock() }
   }
   const routeNoteText = (lib: EffectiveLibrary, id: string): string | undefined => {
     const note = lib.notes[id]
@@ -752,13 +570,7 @@ export function apply(ctx: Context, config: Config) {
 
   /** Wire shape of one roster row for the settings editor: the stored entry
    *  plus the enabled flag when false and a `source` marker for legacy rows. */
-  const wireEntries = (lib: EffectiveLibrary): Record<string, unknown> =>
-    Object.fromEntries(Object.entries(lib.view.entries).map(([id, row]) => [id, {
-      ...row.entry,
-      ...(row.enabled ? {} : { enabled: false }),
-      ...(row.source === 'legacy' ? { source: 'legacy' } : {}),
-      ...(lib.notes[id] !== undefined && lib.notes[id] !== 'shared' ? { routeNote: lib.notes[id] } : {}),
-    }]))
+  const availability = (reason: string | undefined) => reason ? { launchable: false, reason } : { launchable: true }
 
   /** Legacy settings entries currently shadowed by a roster file — the safe
    *  one-click cleanup set for the 0.2→0.3 transition (a legacy row WITHOUT a
@@ -777,13 +589,16 @@ export function apply(ctx: Context, config: Config) {
       message: `共享名册路由 provider "${provider}" 未在当前 profile "${lib.profile}" 注册，调用将改用本会话模型。在此填写的 Provider/模型只保存到这个 profile。`,
     }))
   }
-  const wireView = async (
+  const wireView = (
+    lib: EffectiveLibrary,
     legacySkipWarning = false,
-    /** Extra op-level warnings (e.g. a failed `.yml` sweep) that must reach
-     *  the client alongside the roster diagnostics (SUB-COMPAT-017-002). */
     extraWarnings: string[] = [],
-  ): Promise<Record<string, unknown>> => {
-    const lib = await loadEffective()
+  ): Record<string, unknown> => {
+    const reasons = new Map<string, string | undefined>()
+    const reasonFor = (id: string) => {
+      if (!reasons.has(id)) reasons.set(id, roleUnavailable(ctx, lib, id))
+      return reasons.get(id)
+    }
     const opWarnings = extraWarnings.map((message) => ({ severity: 'warning' as const, message }))
     const diagnostics = [
       ...opWarnings,
@@ -792,6 +607,7 @@ export function apply(ctx: Context, config: Config) {
         : []),
       ...profileRouteWarnings(lib),
       ...lib.view.diagnostics,
+      ...lib.groupDiagnostics,
     ]
     return {
       ok: true,
@@ -799,7 +615,25 @@ export function apply(ctx: Context, config: Config) {
       dir: lib.view.dir,
       hash: lib.view.hash,
       ...(lib.profile !== undefined ? { profile: lib.profile } : {}),
-      entries: wireEntries(lib),
+      ...(lib.profileProblem && { routeWriteProblem: lib.profileProblem }),
+      entries: Object.fromEntries(Object.entries(lib.view.entries).map(([id, row]) => [id, {
+        ...row.entry,
+        ...(row.enabled ? {} : { enabled: false }),
+        ...(row.source === 'legacy' && { source: 'legacy' }),
+        ...(lib.notes[id] && lib.notes[id] !== 'shared' && { routeNote: lib.notes[id] }),
+        ...availability(reasonFor(id)),
+      }])),
+      sharedEntries: Object.fromEntries(Object.entries(lib.raw.entries).map(([id, row]) => [id, {
+        ...row.entry, ...(row.enabled ? {} : { enabled: false }),
+      }])),
+      groups: Object.fromEntries(Object.entries(lib.groups).map(([id, group]) => [id, {
+        ...group,
+        members: group.members.map(member => ({
+          ...member, ...availability(group.enabled === false ? `编队 "${id}" 已停用` : reasonFor(member.role)),
+        })),
+      }])),
+      groupDiagnostics: lib.groupDiagnostics,
+      roleUsages: roleUsages(lib.groups),
       diagnostics,
       legacyCount: legacyShadowedIds(lib.view).length,
     }
@@ -816,6 +650,155 @@ export function apply(ctx: Context, config: Config) {
       if (ids.length === 0) return 'done'
       return settings?.unsetEntries(ids) ?? 'no-settings'
     }
+    class WriteProblem extends Error {
+      constructor(readonly status: number, readonly code: string, message: string, readonly details: Record<string, unknown> = {}) {
+        super(message)
+      }
+    }
+
+    const applyWrite = async (body: Record<string, unknown>, opened: EffectiveLibrary) => {
+      const current = opened.raw
+      const fs = fsPort()
+      const op = body.op
+      const id = typeof body.id === 'string' ? body.id : ''
+      const warnings: string[] = []
+      const unreadable = (diagnostics: RosterDiagnostic[]) => new WriteProblem(503, 'references-unreadable',
+        '引用或角色无法完整读取，请修复后重试。', { diagnostics })
+      const checkDeletion = (ids: string[]) => {
+        if (!ids.length) return
+        if (opened.groupDiagnostics.length) throw unreadable(opened.groupDiagnostics)
+        const usages = roleUsages(opened.groups)
+        const references = ids.flatMap(roleId => (usages[roleId] ?? []).map(ref => ids.length === 1 ? ref : { roleId, ...ref }))
+        if (references.length) throw new WriteProblem(409, 'role-in-use', '有编队成员还在使用这个角色。请先给他们换个角色，或将他们移出编队。', { references })
+      }
+      const readErrors = (role: string) => current.unreadableIds.has(role)
+        ? current.diagnostics.filter(d => d.id === role && d.severity !== 'info') : []
+      const deleteRoles = async (ids: string[]) => {
+        for (const role of ids) {
+          await deleteEntryFile(current.dir, role, fs)
+          await deleteRouteOverlays(current.dir, role, fs)
+        }
+        return await unsetLegacy(ids) === 'skipped-readonly'
+      }
+
+      if (op === 'clear-legacy') {
+        if (settings && !settings.isWritable()) throw new WriteProblem(403, 'readonly', '设置服务只读，无法清除旧副本')
+        await unsetLegacy(legacyShadowedIds(current))
+        return {}
+      }
+      if (op !== 'save' && op !== 'delete' && op !== 'save-entry' && op !== 'save-group' && op !== 'delete-group') {
+        throw new WriteProblem(400, 'unknown-op', '未知的保存操作')
+      }
+      const invalidId = op === 'save' ? undefined : validateEntryId(id)
+      if (invalidId) throw new WriteProblem(400, 'invalid-id', invalidId)
+      if (op === 'save-group' || op === 'delete-group') {
+        if (opened.groupDiagnostics.some(d => !d.id)) throw unreadable(opened.groupDiagnostics)
+        const groupProblems = opened.groupDiagnostics.filter(d => d.id === id)
+        if (op === 'save-group' && groupProblems.length) throw unreadable(groupProblems)
+        if (groupProblems.some(d => d.file !== `_groups/${id}.yaml` && d.file !== `_groups/${id}.yml`)) throw unreadable(groupProblems)
+        if (op === 'delete-group') {
+          await deleteGroup(current.dir, id, fs)
+          return {}
+        }
+        let group: Group
+        try { group = parseGroup(body.group, true) }
+        catch (error) { throw new WriteProblem(400, 'invalid-group', String(error)) }
+        const oldMembers = new Map(opened.groups[id]?.members.map(m => [m.slot, m.role]))
+        for (const { role, slot } of group.members) {
+          if (oldMembers.get(slot) === role) continue
+          if (current.listing === 'unreadable') throw unreadable(current.diagnostics)
+          const problems = current.diagnostics.filter(d => d.id === role && d.severity === 'error')
+          if (!problems.length) problems.push(...readErrors(role))
+          if (problems.length) throw unreadable(problems)
+          if (!current.entries[role]) throw new WriteProblem(400, 'invalid-reference', `成员 "${slot}" 使用的角色 "${role}" 不在名册里`, { slot, role })
+        }
+        if (!isDeepStrictEqual(group, opened.groups[id])) await writeGroup(current.dir, id, group, fs)
+        return {}
+      }
+      if (current.listing === 'unreadable') throw unreadable(current.diagnostics)
+      if (op === 'delete') {
+        checkDeletion([id])
+        return { skipped: await deleteRoles([id]) }
+      }
+
+      const single = op === 'save-entry'
+      const candidate = single ? { [id]: body.entry } : body.entries
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+        throw new WriteProblem(400, 'entries-object-required', 'entries 需要对象')
+      }
+      const documents = new Map<string, ReturnType<typeof parseEntryDocument>>()
+      let route: RouteOverlay | undefined
+      if (single && body.route !== undefined) {
+        if (opened.profileProblem) throw new WriteProblem(400, 'profile-path', opened.profileProblem)
+        try { route = parseRouteOverlay(body.route) }
+        catch (error) { throw new WriteProblem(400, 'invalid-route', String(error)) }
+      }
+      if (single && body.clearToolFilter !== undefined && typeof body.clearToolFilter !== 'boolean') {
+        throw new WriteProblem(400, 'rejected', 'clearToolFilter 需要布尔值')
+      }
+      const deletedIds = single ? [] : Object.keys(current.entries).filter(role => !Object.hasOwn(candidate, role))
+      checkDeletion(deletedIds)
+      // A legacy snapshot can't distinguish a broken file from an intentionally omitted role.
+      if (!single) {
+        const damaged = [...current.unreadableIds].flatMap(readErrors)
+        if (damaged.length) throw unreadable(damaged)
+        if (deletedIds.some(role => current.entries[role].entry.toolFilter !== undefined)) {
+          throw new WriteProblem(409, 'tool-filter-protected', '请在角色行显式删除带有工具限制的角色。')
+        }
+      }
+      for (const [role, value] of Object.entries(candidate)) {
+        const invalid = validateEntryId(role)
+        if (invalid) throw new WriteProblem(400, 'invalid-entry-id', invalid)
+        const problems = readErrors(role)
+        if (problems.length) throw unreadable(problems)
+        if (!value || typeof value !== 'object' || Array.isArray(value)) throw new WriteProblem(400, 'rejected', '条目需要对象')
+        const payload = { ...value } as Record<string, unknown>
+        for (const key of ['source', 'routeNote', 'launchable', 'reason']) delete payload[key]
+        const previous = current.entries[role]?.entry
+        if (previous?.backgroundMode && !Object.hasOwn(payload, 'backgroundMode')) payload.backgroundMode = previous.backgroundMode
+        if (single && body.clearToolFilter === true) delete payload.toolFilter
+        else if (single && previous?.toolFilter !== undefined && !Object.hasOwn(payload, 'toolFilter')) payload.toolFilter = previous.toolFilter
+        let parsed: ReturnType<typeof parseEntryDocument>
+        try { parsed = parseEntryDocument(payload) }
+        catch (error) { throw new WriteProblem(400, 'rejected', `条目 "${role}"：${String(error)}`) }
+        if (previous?.toolFilter !== undefined && !(single && body.clearToolFilter === true)
+          && !isDeepStrictEqual(previous.toolFilter, parsed.entry.toolFilter)) {
+          throw new WriteProblem(409, 'tool-filter-protected', `角色 "${role}" 的工具限制需要单独确认移除。`)
+        }
+        if (!single && opened.profileProblem
+          && !sameRoute(pickRoute(parsed.entry), pickRoute(opened.view.entries[role]?.entry ?? {}))) {
+          throw new WriteProblem(400, 'profile-path', opened.profileProblem)
+        }
+        documents.set(role, parsed)
+      }
+      for (const [role, doc] of documents) {
+        const prev = current.entries[role]
+        // A single-entry save carries route edits separately from role identity.
+        // Only a host without a profile applies an explicit route to the shared file.
+        let shared = single || opened.profile !== undefined ? preserveSharedRoute(doc.entry, prev?.entry) : doc.entry
+        if (!opened.profile && route !== undefined) {
+          shared = 'inherit' in route ? stripRoute(doc.entry) : withRoute(doc.entry, route)
+        }
+        if (prev?.source === 'file' && prev.file === entryFileName(role)
+          && serializeEntry(prev.entry, prev.enabled) === serializeEntry(shared, doc.enabled)) {
+          try { await removeYmlSibling(current.dir, role, fs) }
+          catch (error) { warnings.push(`条目 "${role}" 的同名 .yml 残留清除失败：${String(error)}`) }
+        } else {
+          await writeEntryFile({ dir: current.dir, id: role, entry: shared, enabled: doc.enabled, fs })
+        }
+        if (doc.entry.toolFilter !== undefined) warnings.push(`条目 "${role}" 带 toolFilter，当前宿主无法强制执行逐条目工具过滤。`)
+        if (opened.profile && !opened.profileProblem) {
+          if (single && route !== undefined) {
+            await writeRouteOverlay(current.dir, opened.profile, role, route, fs, undefined, routeBinding(shared))
+          } else if (!single) {
+            await syncProfileRoute({ dir: current.dir, profile: opened.profile, id: role, client: doc.entry,
+              shown: opened.view.entries[role]?.entry ?? { description: doc.entry.description }, shared, fs })
+          }
+        }
+      }
+      return { skipped: await deleteRoles(deletedIds), warnings }
+    }
+
     wctx.effect(() => web.register({
       kind: 'exact',
       path: '/subagent-library/api',
@@ -826,7 +809,7 @@ export function apply(ctx: Context, config: Config) {
             return
           }
           try {
-            sendJson(res, 200, await wireView())
+            sendJson(res, 200, wireView(await loadEffective()))
           } catch (error) {
             sendJson(res, 500, { ok: false, error: 'roster-unreadable', message: String(error) })
           }
@@ -851,644 +834,43 @@ export function apply(ctx: Context, config: Config) {
           return
         }
         const body = read.body
-        const rawHash = body['expectedHash']
-        // Non-string hashes are treated as absent (documented leniency, same
-        // posture the old expectedRevision revision had).
-        const expectedHash = typeof rawHash === 'string' ? rawHash : undefined
-        try {
-          const opened = await loadEffective()
-          const current = opened.raw
-          // UI write guard: hash of the view the editor last saw, including
-          // this profile's route overlays. Another profile's overlay does not
-          // change it. A stale hash gets a 409 whose `view` carries the fresh
-          // roster so the editor can merge and retry.
-          if (expectedHash !== undefined && expectedHash !== opened.view.hash) {
-            sendJson(res, 409, {
-              ok: false,
-              error: 'conflict',
-              view: {
-                ok: true,
-                writable: true,
-                dir: opened.view.dir,
-                hash: opened.view.hash,
-                ...(opened.profile !== undefined ? { profile: opened.profile } : {}),
-                entries: wireEntries(opened),
-                diagnostics: [...profileRouteWarnings(opened), ...opened.view.diagnostics],
-                legacyCount: legacyShadowedIds(opened.raw).length,
-              },
-            })
-            return
-          }
-          if (body['op'] === 'clear-legacy') {
-            // One-click cleanup for the 0.2→0.3 transition: unset ONLY the
-            // legacy copies currently shadowed by a roster file. Legacy rows
-            // without a file (failed export, hand-deleted file) keep serving
-            // and are deliberately left alone.
-            if (settings !== undefined && !settings.isWritable()) {
-              // A silent 200 here would be a false success (A7): the user
-              // believes the rollback copies are gone when they are not.
-              sendJson(res, 403, { ok: false, error: 'readonly', message: '设置服务只读，无法清除旧副本' })
-              return
-            }
-            await unsetLegacy(legacyShadowedIds(current))
-          } else if (body['op'] === 'delete') {
-            const id = typeof body['id'] === 'string' ? body['id'] : ''
-            if (!ENTRY_ID.test(id)) {
-              sendJson(res, 400, { ok: false, error: 'invalid-id' })
-              return
-            }
-            await deleteEntryFile(current.dir, id, fsPort())
-            await deleteRouteOverlays(current.dir, id, fsPort())
-            // The id may also exist as a legacy settings copy (imported rows
-            // keep their settings document until cleaned) — unset it too; the
-            // unset is a no-op when the key is absent.
-            const unset = await unsetLegacy([id])
-            sendJson(res, 200, await wireView(unset === 'skipped-readonly'))
-            return
-          } else if (body['op'] === 'save') {
-            const entries = body['entries']
-            if (typeof entries !== 'object' || entries === null || Array.isArray(entries)) {
-              sendJson(res, 400, { ok: false, error: 'entries-object-required' })
-              return
-            }
-            const candidate = entries as Record<string, unknown>
-            // Validate EVERY id and payload before touching the disk. toolFilter
-            // names are still NOT pre-checked against the tool registry —
-            // `tools.restrict` at child composition remains the real guard
-            // (0.2.2–0.2.4 showed a save-time pre-check only false-rejects).
-            const validated = new Map<string, { entry: Entry, enabled: boolean }>()
-            for (const [id, value] of Object.entries(candidate)) {
-              const idError = validateEntryId(id)
-              if (idError !== undefined) {
-                sendJson(res, 400, { ok: false, error: 'invalid-entry-id', message: idError })
-                return
-              }
-              const payload = { ...(value as Record<string, unknown>) }
-              delete payload['source'] // editor provenance marker, not entry data
-              delete payload['routeNote'] // per-profile display marker, not entry data
-              try {
-                validated.set(id, parseEntryDocument(payload))
-              } catch (error) {
-                sendJson(res, 400, { ok: false, error: 'rejected', message: `条目 "${id}"：${String(error)}` })
-                return
-              }
-            }
-            // Snapshot semantics: every payload row becomes a file; roster rows
-            // absent from the payload are deleted — the file directly, AND the
-            // possible legacy copy through the settings service. After a
-            // successful migration a row can exist in BOTH stores; deleting
-            // only the file would let the legacy copy resurrect it.
-            // Rows whose NORMALIZED content is unchanged are skipped: a
-            // settings-page save must not rewrite untouched files, because
-            // serializeEntry is program-generated and would destroy
-            // hand-written comments in files the user never opened (A1).
-            // The skip only applies to CANONICAL `.yaml` rows: a `.yml` row
-            // (or any failed-convergence residue) must still be rewritten so
-            // it converges — otherwise an unchanged-content retry after a
-            // failed convergence would deadlock with the duplicate-id
-            // diagnostic forever (red team #3).
-            const sweepWarnings: string[] = []
-            if (isModernSubagentHost(ctx.subagents)) {
-              // The editor still accepts toolFilter for round-tripping old
-              // files, but this host will refuse to delegate such entries —
-              // warn at save time instead of failing at delegate time only.
-              for (const [id, doc] of validated) {
-                if (doc.entry.toolFilter !== undefined) {
-                  sweepWarnings.push(`条目 "${id}" 带 toolFilter：本宿主（DSH ≥0.2.1）无法强制执行逐条目工具过滤，委派该条目会被拒绝。`)
-                }
-              }
-            }
-            const profileState = currentProfile()
-            if (profileState.kind === 'unsafe') {
-              for (const [id, doc] of validated) {
-                const shown = opened.view.entries[id]?.entry ?? { description: doc.entry.description }
-                if (!sameRoute(pickRoute(doc.entry), pickRoute(shown))) {
-                  sendJson(res, 400, {
-                    ok: false,
-                    error: 'profile-path',
-                    message: `${profileState.reason}。不能把本 profile 的模型路由写进共享名册。`,
-                  })
-                  return
-                }
-              }
-            }
-            for (const [id, doc] of validated) {
-              const prev = current.entries[id]
-              // A profiled save must not write this profile's provider/model
-              // into the shared file — that is the other profile's route.
-              const sharedDoc = profileState.kind === 'absent'
-                ? doc
-                : { entry: preserveSharedRoute(doc.entry, prev?.entry), enabled: doc.enabled }
-              const onCanonicalFile = prev?.source === 'file' && prev.file === entryFileName(id)
-              if (onCanonicalFile
-                && serializeEntry(prev.entry, prev.enabled) === serializeEntry(sharedDoc.entry, sharedDoc.enabled)) {
-                // Identical canonical row — still sweep a leftover `.yml`
-                // sibling left by a previously failed convergence. A sweep
-                // failure must NOT be silent (SUB-COMPAT-017-002): the save
-                // itself succeeded, but the duplicate-id conflict stays until
-                // the sweep succeeds — surface it as a response warning.
-                try {
-                  await removeYmlSibling(current.dir, id, fsPort())
-                } catch (error) {
-                  sweepWarnings.push(`条目 "${id}" 的同名 .yml 残留清除失败，冲突诊断会持续到清除成功：${String(error)}`)
-                }
-              } else {
-                await writeEntryFile({
-                  dir: current.dir,
-                  id,
-                  entry: sharedDoc.entry,
-                  enabled: sharedDoc.enabled,
-                  fs: fsPort(),
-                })
-              }
-              // Route-only edits do not change the shared file. Still persist
-              // them — otherwise a profile save that only retargets the model
-              // is dropped by the skip-identical continue above.
-              if (profileState.kind === 'ready') {
-                await syncProfileRoute({
-                  dir: current.dir,
-                  profile: profileState.name,
-                  id,
-                  client: doc.entry,
-                  shown: opened.view.entries[id]?.entry ?? { description: doc.entry.description },
-                  shared: prev?.entry,
-                  fs: fsPort(),
-                })
-              }
-            }
-            const deletedIds: string[] = []
-            for (const [id, row] of Object.entries(current.entries)) {
-              if (validated.has(id)) continue
-              deletedIds.push(id)
-              if (row.source === 'file') await deleteEntryFile(current.dir, id, fsPort())
-              await deleteRouteOverlays(current.dir, id, fsPort())
-            }
-            const unset = await unsetLegacy(deletedIds)
-            sendJson(res, 200, await wireView(unset === 'skipped-readonly', sweepWarnings))
-            return
-          } else {
-            sendJson(res, 400, { ok: false, error: 'unknown-op' })
-            return
-          }
-          // Only clear-legacy reaches this tail without having answered.
-          sendJson(res, 200, await wireView())
-        } catch (error) {
-          // Per-file writes are individually atomic; a mid-snapshot failure
-          // leaves a partial roster and is reported loudly with the message.
-          sendJson(res, 500, { ok: false, error: 'write-failed', message: String(error) })
+        const expectedHash = typeof body.expectedHash === 'string' ? body.expectedHash : undefined
+        if (['save-entry', 'save-group', 'delete-group'].includes(String(body.op)) && !expectedHash) {
+          sendJson(res, 400, { ok: false, error: 'expected-hash-required' })
+          return
         }
+        let response: Record<string, unknown>
+        let status = 200
+        const config = { ...resolveConfig() }
+        const dir = resolveEntriesDir(config.entriesDir)
+        // A settings write may replace the legacy section. Refresh it only for this locked directory.
+        const latestConfig = () => {
+          const latest = resolveConfig()
+          return resolveEntriesDir(latest.entriesDir) === dir ? latest : config
+        }
+        try {
+          const unlock = await lockRoster(dir, fsPort())
+          try {
+            const opened = await readEffective(body.op === 'clear-legacy' && expectedHash === undefined, latestConfig(), dir)
+            if (expectedHash !== undefined && expectedHash !== opened.view.hash) {
+              throw new WriteProblem(409, 'conflict', '名册已变更，请核对最新内容。')
+            }
+            const result = await applyWrite(body, opened)
+            response = wireView(await readEffective(true, latestConfig(), dir), result.skipped, result.warnings)
+          } finally {
+            await unlock()
+          }
+        } catch (error) {
+          const busy = (error as NodeJS.ErrnoException).code === 'ROSTER_BUSY'
+          status = error instanceof WriteProblem ? error.status : busy ? 503 : 500
+          const code = error instanceof WriteProblem ? error.code : busy ? 'roster-busy' : 'write-failed'
+          const view = await readEffective(false, latestConfig(), dir).then(wireView).catch(() => undefined)
+          response = { ok: false, error: code, message: String(error), ...(error instanceof WriteProblem && error.details), view }
+        }
+        sendJson(res, status, response)
       },
     }), 'subagent-library: settings api route')
   })
 
-  // ── model-facing tools ─────────────────────────────────────────────────────
-  ctx.tools.register(defineTool({
-    name: 'list_subagents',
-    description: 'List the named subagents available in the subagent library: each entry shows its id, role description, provider, model, background mode and tool filter (allow/deny scoping — e.g. deny:[write, edit] marks a read-only role)'
-      + (isModernSubagentHost(ctx.subagents)
-        ? '. On this host (DSH ≥0.2.1) per-entry tool filters cannot be enforced: entries carrying toolFilter are refused at delegate time and marked as undelegable in the listing.'
-        : '')
-      + ' Call this before delegating so you can pick a matching library_id.',
-    parameters: {},
-    output: {
-      schema: {
-        type: 'array',
-        items: {
-          type: 'object',
-          properties: {
-            id: { type: 'string' },
-            description: { type: 'string' },
-            provider: { type: 'string' },
-            model: { type: 'string' },
-            backgroundMode: { type: 'string' },
-            toolFilter: { type: 'string' },
-          },
-          additionalProperties: true,
-        },
-      },
-      render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }],
-    },
-    isConcurrencySafe: () => true,
-    async execute(_args, exec) {
-      if (settingsFailure !== undefined) throw new Error(settingsFailure)
-      const lib = await loadEffective()
-      const { view } = lib
-      const agent = exec.agent
-      const modernCatalog = isModernSubagentHost(ctx.subagents)
-      /** The catalog must not advertise a filter this session cannot apply:
-       *  summarize the SANITIZED filter and list what was ignored, so the model
-       *  sees the same tool scope delegation will actually produce. On a host
-       *  without filter enforcement the filter is undelegable outright, so the
-       *  row says so instead of advertising a scope delegation would refuse. */
-      const filterSummary = (row: RosterEntry): string | undefined => {
-        const entry = row.entry
-        if (entry.toolFilter === undefined) return undefined
-        const declared = [
-          entry.toolFilter.allow !== undefined ? `allow:[${entry.toolFilter.allow.join(', ')}]` : '',
-          entry.toolFilter.deny !== undefined ? `deny:[${entry.toolFilter.deny.join(', ')}]` : '',
-        ].filter(Boolean).join(' ')
-        if (modernCatalog) return `${declared}（本宿主无法强制执行 toolFilter，委派该条目会被拒绝）`
-        if (agent === undefined) return declared
-        const { filter, dropped } = sanitizeToolFilter(ctx, entry.toolFilter, agent)
-        const effective = filter === undefined
-          ? '(本会话无可应用的名单项)'
-          : [
-              filter.allow !== undefined ? `allow:[${filter.allow.join(', ')}]` : '',
-              filter.deny !== undefined ? `deny:[${filter.deny.join(', ')}]` : '',
-            ].filter(Boolean).join(' ')
-        return dropped.length > 0
-          ? `${effective} 忽略:[${dropped.map((item) => item.name).join(', ')}]`
-          : effective
-      }
-      /** Row shape mirrors the tool's declared output schema (JsonValue-safe:
-       *  no bare Record<string, unknown>, the diagnostics row included). */
-      type CatalogRow = {
-        id?: string
-        description?: string
-        provider?: string
-        model?: string
-        backgroundMode?: string
-        toolFilter?: string
-        enabled?: boolean
-        routeNote?: string
-        diagnostics?: string[]
-      }
-      const rows: CatalogRow[] = Object.entries(view.entries).map(([id, row]) => {
-        const summary = filterSummary(row)
-        const routeNote = routeNoteText(lib, id)
-        return {
-          id,
-          description: row.entry.description,
-          provider: row.entry.provider ?? '(session default)',
-          model: row.entry.model ?? '(session default)',
-          backgroundMode: row.entry.backgroundMode ?? 'one-shot',
-          ...(row.enabled ? {} : { enabled: false }),
-          ...(summary !== undefined ? { toolFilter: summary } : {}),
-          ...(routeNote !== undefined ? { routeNote } : {}),
-        }
-      })
-      // Roster files that failed to load must be visible to the model too —
-      // a silently missing entry looks like "the agent disappeared". Info
-      // diagnostics (legacy-shadow notices) stay on the settings page: while
-      // legacy copies exist they would repeat on every catalog call.
-      const catalogDiagnostics = view.diagnostics.filter((item) => item.severity !== 'info')
-      if (catalogDiagnostics.length > 0) {
-        rows.push({
-          diagnostics: catalogDiagnostics.map((item) =>
-            `${item.severity}${item.id !== undefined ? ` [${item.id}]` : ''}: ${item.message}`),
-        })
-      }
-      return rows
-    },
-  }))
-
-  ctx.tools.register(defineTool({
-    name: 'delegate',
-    description: 'Delegate a task to a named subagent from the subagent library (see list_subagents for available entries and their roles). The child runs on the entry\'s model when that provider is registered in this profile; a provider that exists only in another profile is not used, and the child inherits this session\'s model instead. Prefer this over ad-hoc subagent calls when a library entry matches the task.',
-    parameters: {
-      library_id: {
-        type: 'string',
-        required: true,
-        description: 'id of the library entry to use',
-      },
-      prompt: {
-        type: 'string',
-        required: true,
-        description: 'task content delivered to the child as its first user message',
-      },
-      description: {
-        type: 'string',
-        description: 'short display label recorded for the child session',
-      },
-      run_in_background: {
-        type: 'boolean',
-        description: 'start as a background task and return immediately (continuable entries run in the background by default)',
-        default: false,
-      },
-    },
-    output: {
-      schema: {
-        type: 'object',
-        properties: {
-          kind: { type: 'string' },
-          runId: { type: 'string' },
-          output: { type: 'array', items: { type: 'json' } },
-          jobId: { type: 'string' },
-          subagentId: { type: 'string' },
-        },
-        additionalProperties: true,
-      },
-      render: (_args, value) => {
-        const dropped = Array.isArray(value.droppedTools)
-          ? value.droppedTools.filter((name): name is string => typeof name === 'string')
-          : []
-        const text = value.kind === 'background'
-          ? `started background subagent task ${value.jobId}`
-          : value.kind === 'continuable'
-            ? `started subagent ${value.subagentId}`
-            : value.kind === 'foreground'
-              ? outputValueText(value.output ?? [])
-              : JSON.stringify(value)
-        const routeNote = typeof value.routeNote === 'string' && value.routeNote !== ''
-          ? `\n（${value.routeNote}）`
-          : ''
-        return [{
-          type: 'text',
-          text: text + routeNote + (dropped.length > 0
-            ? `\n（已忽略本会话不可用的工具名：${dropped.join('；')}）`
-            : ''),
-        }]
-      },
-    },
-    isConcurrencySafe: () => true,
-    async execute(args, exec): Promise<DelegateResult> {
-      if (settingsFailure !== undefined) throw new Error(settingsFailure)
-      const parent = exec.agent
-      if (!parent) throw new Error('delegate tool requires a calling agent (exec.agent was undefined)')
-      const lib = await loadEffective()
-      const { subagentProvider: defaultProvider, view } = lib
-      if (!ENTRY_ID.test(args.library_id)) throw new Error(`subagent library entry id "${args.library_id}" is invalid`)
-      // Own-property lookup only: a plain-object prototype chain would resolve
-      // ids like `constructor` to inherited functions (≠ undefined) and slip
-      // past the missing-entry error into a real delegation.
-      const row = Object.hasOwn(view.entries, args.library_id) ? view.entries[args.library_id] : undefined
-      if (row === undefined) {
-        const ids = Object.keys(view.entries)
-        throw new Error(`subagent library has no entry "${args.library_id}"${ids.length ? ` (available: ${ids.join(', ')})` : ' (library is empty)'}`)
-      }
-      if (!row.enabled) {
-        throw new Error(`delegate: entry "${args.library_id}" is disabled — remove "enabled: false" in its roster file (or re-enable it on the settings page) to delegate to it again`)
-      }
-      const routeNote = routeNoteText(lib, args.library_id)
-      if (lib.notes[args.library_id] === 'overlay-broken') {
-        throw new Error(`delegate: ${routeNote ?? 'profile route file is invalid'}`)
-      }
-      if (lib.notes[args.library_id] === 'profile-missing') {
-        const available = lib.registeredProviders?.join(', ') || 'none'
-        throw new Error(`delegate: profile "${lib.profile}" route for "${args.library_id}" uses provider "${row.entry.provider}", which is not registered in this profile (available: ${available}). Clear Provider on this profile's settings page to use the session model, or set a provider this profile has.`)
-      }
-      const entry = row.entry
-
-      const subagentProviderName = entry.subagentProvider ?? defaultProvider
-      const transport = ctx.subagents.getProvider(subagentProviderName)
-      if (transport === undefined) {
-        throw new Error(`subagent transport provider "${subagentProviderName}" is not registered (available: ${ctx.subagents.list().join(', ') || 'none'})`)
-      }
-
-      const continuable = entry.backgroundMode === 'continuable'
-      if (continuable && transport.prepareContinuable === undefined) {
-        throw new Error(`delegate: transport "${subagentProviderName}" does not support continuable children`)
-      }
-
-      // A missing maxDepth used to mean "harness-managed", but the harness
-      // imposes no global recursion cap (resolveChildDepth checks only an
-      // explicit value). Default to 3 like the official subagent tool, but
-      // only when the transport can enforce it — providers without a
-      // depthLimit capability stay unaffected (design decision #4, amended
-      // after the red-team review).
-      const maxDepth = entry.maxDepth ?? (transport.capabilities.depthLimit ? DEFAULT_MAX_DEPTH : undefined)
-      if (maxDepth !== undefined) assertSubagentMaxDepth(maxDepth)
-      // Resolve toolFilter names against the CALLING session before delegating:
-      // restrict() fails the whole filter on any name the child cannot inherit
-      // (unknown, or scope-local to this parent), and one shared roster entry
-      // would then fail per session. The scope key is the AGENT object itself
-      // (dsh-tools resolves views with `exec.agent`; dsh-scope tags it via
-      // `ctx[kScope]`), never the agent's Context. See sanitizeToolFilter.
-      const { filter: toolFilter, dropped, allowEmptied } = sanitizeToolFilter(ctx, entry.toolFilter, parent)
-      const droppedTools = dropped.map((item) => item.reason === 'session-local'
-        ? `${item.name}（本会话专属工具，子代本就继承不到）`
-        : `${item.name}（本会话不存在）`)
-      // Hosts that expose startActivation (DSH ≥0.2.1) removed startContinuable
-      // and the persona/toolFilter start capabilities. Older hosts still take
-      // those fields on start/startContinuable.
-      const subagentHost = ctx.subagents as {
-        start?: (name: string, request: SubagentStartRequest) => Promise<SubagentRun>
-        startContinuable?: (spec: {
-          provider: string
-          label: string
-          request: Omit<SubagentStartRequest, 'signal' | 'outputSchema'>
-          signal: AbortSignal
-        }) => Promise<{ childId: string }>
-        startActivation?: (spec: {
-          provider: string
-          label: string
-          request: Omit<SubagentStartRequest, 'label' | 'signal'>
-          signal: AbortSignal
-          delivery: 'parent' | 'caller'
-        }) => Promise<{ childId: string, result: Promise<SubagentResult>, dispose: () => Promise<void> }>
-      }
-      const modernHost = isModernSubagentHost(subagentHost)
-      // A modern host cannot enforce per-entry tool filters at all. Refuse
-      // BEFORE the allow-list check: "add the tool names back" would never
-      // make this entry delegable here, so that error would mislead.
-      if (modernHost && entry.toolFilter !== undefined) {
-        throw new Error(`delegate: this host cannot enforce a per-child toolFilter (entry "${args.library_id}"). Remove toolFilter from the roster file, or run on a host that still accepts it.`)
-      }
-      if (allowEmptied) {
-        throw new Error(`delegate: entry "${args.library_id}" allow list names no tool this session can apply (${droppedTools.join('; ')}) — refusing to start a child with no tools at all`)
-      }
-      // The transport enforces depth limits on BOTH host shapes; a modern host
-      // would only re-check later with its own less actionable capability error.
-      if (!continuable && maxDepth !== undefined && !transport.capabilities.depthLimit) {
-        throw new Error(`delegate: transport "${subagentProviderName}" cannot enforce maxDepth (no depthLimit capability)`)
-      }
-      // The one-shot capability flags (depthLimit/persona/toolFilter) describe
-      // ONLY the old one-shot `start` path. A modern host applies neither flag;
-      // a continuable child on an old host is composed by the continuation manager.
-      if (!modernHost && !continuable) {
-        if (entry.persona !== undefined && !transport.capabilities.persona) {
-          throw new Error(`delegate: transport "${subagentProviderName}" cannot apply a persona (no persona capability)`)
-        }
-        if (entry.toolFilter !== undefined && entry.toolFilter.allow === undefined && entry.toolFilter.deny === undefined) {
-          throw new Error(`delegate: entry "${args.library_id}" names a toolFilter with neither allow nor deny`)
-        }
-        if (entry.toolFilter !== undefined && !transport.capabilities.toolFilter) {
-          // Keyed on the DECLARED filter, not the sanitized one: a transport that
-          // cannot apply filters must still refuse an entry that asks for one,
-          // even if every name happened to be dropped in this session.
-          throw new Error(`delegate: transport "${subagentProviderName}" cannot apply a tool filter (no toolFilter capability)`)
-        }
-      }
-
-      // entry.provider/model/reasoningEffort are the LLM route + model +
-      // thinking-effort overrides (agentOptions), NOT the subagent transport;
-      // the transport is `subagentProvider` (default spawn). The official
-      // resolver merges agentOptions over the parent's options and drops an
-      // inherited reasoningEffort when the route changes, so an entry that
-      // sets neither model nor reasoningEffort keeps the caller's behavior.
-      // The new start request has no persona field. Deliver the role in the
-      // task text so a continuable library entry still runs as that role.
-      const promptText = modernHost && entry.persona !== undefined
-        ? `Role persona:\n${entry.persona}\n\nTask:\n${args.prompt}`
-        : args.prompt
-      const agentOptions = entry.provider !== undefined || entry.model !== undefined
-        || entry.maxTokens !== undefined || entry.reasoningEffort !== undefined
-        ? {
-            ...(entry.provider !== undefined ? { provider: entry.provider } : {}),
-            ...(entry.model !== undefined ? { model: entry.model } : {}),
-            ...(entry.reasoningEffort !== undefined
-              ? { reasoningEffort: entry.reasoningEffort as ReasoningEffortId }
-              : {}),
-            ...(entry.maxTokens !== undefined ? { maxTokens: entry.maxTokens } : {}),
-          }
-        : undefined
-      const request: Omit<SubagentStartRequest, 'signal' | 'outputSchema'> = {
-        label: args.description ?? args.library_id,
-        prompt: [{ type: 'text' as const, text: promptText }],
-        parent,
-        ...(agentOptions !== undefined ? { agentOptions } : {}),
-        ...(!modernHost && entry.persona !== undefined ? { persona: entry.persona } : {}),
-        ...(!modernHost && toolFilter !== undefined ? { toolFilter } : {}),
-        ...(maxDepth !== undefined ? { maxDepth } : {}),
-      }
-      const begin = async (signal: AbortSignal, delivery: 'parent' | 'caller'): Promise<{
-        childId: string
-        run?: SubagentRun
-      }> => {
-        if (subagentHost.startActivation !== undefined) {
-          const { label, ...task } = request
-          const started = await subagentHost.startActivation({
-            provider: subagentProviderName,
-            label: label ?? args.library_id,
-            request: task,
-            signal,
-            delivery,
-          })
-          return {
-            childId: started.childId,
-            run: {
-              id: started.childId as SubagentRun['id'],
-              result: started.result,
-              localAgent: undefined,
-              dispose: () => started.dispose(),
-            },
-          }
-        }
-        if (continuable) {
-          if (subagentHost.startContinuable === undefined) {
-            throw new Error('delegate: this host has no startContinuable or startActivation')
-          }
-          const started = await subagentHost.startContinuable({
-            provider: subagentProviderName,
-            label: request.label ?? args.library_id,
-            request,
-            signal,
-          })
-          return { childId: started.childId }
-        }
-        if (subagentHost.start === undefined) {
-          throw new Error('delegate: this host has no subagent start or startActivation')
-        }
-        const run = await subagentHost.start(subagentProviderName, { ...request, signal })
-        return { childId: run.id, run }
-      }
-      const droppedNote = {
-        ...(droppedTools.length > 0 ? { droppedTools } : {}),
-        ...(routeNote !== undefined && lib.notes[args.library_id] !== 'profile' ? { routeNote } : {}),
-      }
-
-      const runInBackground = args.run_in_background === true || continuable
-      if (runInBackground) {
-        if (continuable) {
-          return {
-            kind: 'continuable',
-            subagentId: (await begin(exec.signal, 'parent')).childId,
-            ...droppedNote,
-          }
-        }
-        const jobs = ctx.get('jobs') as JobRunner | undefined
-        if (jobs === undefined) {
-          throw new Error('background jobs unavailable: load @deepseek-ai/dsh-jobs and @deepseek-ai/dsh-tool-jobs')
-        }
-        return {
-          kind: 'background',
-          jobId: jobs.start({
-            kind: 'subagent',
-            label: args.description ?? args.library_id,
-            // dsh-jobs changed owner identity with the ≥0.2.1 wave: hosts that
-            // expose startActivation register `owner` as the calling session's
-            // id, older hosts as the calling Agent itself.
-            owner: modernHost ? parent.session.id : parent,
-            run: () => {
-              const controller = new AbortController()
-              // A ≥0.2.1 activation signal only rolls the child back BEFORE the
-              // host accepts it; past acceptance the caller owns cancellation
-              // through dispose(). Old-host runs expose the same dispose, so
-              // one path serves both shapes: abort is the pre-acceptance
-              // channel, dispose the post-acceptance one (idempotent on both).
-              let accepted: SubagentRun | undefined
-              return {
-                cancel: (reason) => {
-                  controller.abort(reason ?? 'background subagent task killed')
-                  void accepted?.dispose().catch(() => { /* settleStart reports the outcome */ })
-                },
-                done: settleStart(begin(controller.signal, 'caller').then((started) => {
-                  if (started.run === undefined) throw new Error('delegate: background start returned no run')
-                  accepted = started.run
-                  if (controller.signal.aborted) {
-                    // Cancel raced the acceptance boundary: abort() alone no
-                    // longer reaches an accepted child, so dispose here and
-                    // let settleStart report killed via the aborted signal.
-                    void accepted.dispose().catch(() => { /* settleStart reports killed either way */ })
-                    throw new Error('background subagent task killed')
-                  }
-                  return accepted
-                }), controller.signal),
-              }
-            },
-          }),
-          ...droppedNote,
-        }
-      }
-      const started = await begin(exec.signal, 'caller')
-      if (started.run === undefined) throw new Error('delegate: foreground start returned no run')
-      return {
-        ...(await settleForegroundRun(started.run, exec.signal)),
-        ...droppedNote,
-      }
-    },
-  }))
-
-  // ── prompt section: teach the model the library exists and how to use it ───
-  ctx.systemPrompt.section({
-    name: 'subagent-library',
-    order: LIBRARY_SECTION_ORDER,
-    text: (context) => ctx.tools.get('list_subagents', context.scope) === undefined
-      ? ''
-      : 'Use list_subagents to see the named subagents in the library, then delegate with the delegate tool (library_id + prompt). Library entries run on a fixed model with a role persona; prefer them over ad-hoc subagent calls when an entry matches the task. A roster provider that is not registered in this profile is not called — the child inherits this session\'s model unless this profile has its own route.',
-  })
-
-  // ── /subagent command: human-facing catalog ────────────────────────────────
-  const commands = ctx.get('commands')
-  if (commands !== undefined) {
-    commands.register({
-      name: 'subagent',
-      description: 'List the subagent library entries',
-      handler: async (): Promise<CommandResult> => {
-        const lib = await loadEffective()
-        const { view } = lib
-        const ids = Object.keys(view.entries)
-        const lines = ids.map((id) => {
-          const row = view.entries[id]
-          const note = lib.notes[id]
-          const tags = [
-            `${row.entry.provider ?? '默认模型路由'}/${row.entry.model ?? '默认模型'}`,
-            note === 'foreign-ignored' || note === 'inherit' ? '本 profile 会话模型' : '',
-            note === 'profile' ? `profile:${lib.profile}` : '',
-            row.entry.backgroundMode === 'continuable' ? '可续聊' : '',
-            row.source === 'legacy' ? 'legacy' : '',
-            row.enabled ? '' : '已停用',
-          ].filter(Boolean).join('，')
-          return `- ${id}: ${row.entry.description} [${tags}]`
-        })
-        const diagnosticLines = view.diagnostics
-          .filter((item) => item.severity !== 'info')
-          .map((item) => `  ! ${item.severity}${item.id !== undefined ? ` [${item.id}]` : ''}: ${item.message}`)
-        const text = ids.length === 0 && view.diagnostics.length === 0
-          ? `子代理库为空。在名册目录放置 <id>.yaml 文件（默认 ~/.dsh/subagents/，可用 subagent-library.entriesDir 配置），或在设置页添加。`
-          : `子代理库（${ids.length} 个，目录 ${view.dir}）：\n` + [...lines, ...diagnosticLines].join('\n')
-        return { kind: 'success', text }
-      },
-    })
-  }
+  registerLibraryTools(ctx, loadEffective, routeNoteText, () => settingsFailure)
 }

@@ -20,10 +20,7 @@ const TOKEN = {
   dangerSoft: 'var(--dsw-alias-state-error-secondary, rgba(220,38,38,0.12))',
 } as const
 
-export const ACCENT = TOKEN.accent
-export const SUCCESS = TOKEN.success
-export const DANGER = TOKEN.danger
-export const MONO = 'ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace'
+const MONO = 'ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace'
 
 const button: React.CSSProperties = {
   display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
@@ -47,21 +44,8 @@ export const S = {
     boxSizing: 'border-box', padding: '16px 4px', color: TOKEN.primary,
     containerType: 'inline-size', containerName: 'dsh-library',
   },
-  pageHeader: { display: 'flex', flexDirection: 'column', gap: 7 },
   headingRow: { display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' },
   heading: { fontSize: 20, lineHeight: 1.4, fontWeight: 650, letterSpacing: '-0.025em', margin: 0 },
-  sub: { fontSize: 12.5, lineHeight: 1.65, color: TOKEN.muted, margin: 0 },
-
-  band: {
-    display: 'flex', flexDirection: 'column', gap: 10, padding: '13px 16px',
-    background: TOKEN.inset, borderRadius: 10,
-  },
-  bandStats: { display: 'flex', alignItems: 'baseline', gap: '8px 24px', flexWrap: 'wrap' },
-  bandStat: { display: 'flex', alignItems: 'baseline', gap: 6 },
-  bandValue: { fontSize: 19, fontWeight: 600, lineHeight: 1.3, fontVariantNumeric: 'tabular-nums' },
-  bandLabel: { fontSize: 11.5, color: TOKEN.muted, flexShrink: 0 },
-  bandDir: { display: 'flex', alignItems: 'baseline', gap: 10, minWidth: 0 },
-  bandPath: { fontFamily: MONO, fontSize: 11.5, color: TOKEN.secondary, overflowWrap: 'anywhere', minWidth: 0 },
   banner: {
     fontSize: 12.5, lineHeight: 1.65, padding: '10px 12px', borderRadius: 8,
     display: 'flex', flexDirection: 'column', gap: 6, overflowWrap: 'anywhere',
@@ -76,10 +60,6 @@ export const S = {
   searchInput: {
     flex: 1, minWidth: 0, border: 'none', outline: 'none', padding: 0,
     background: 'transparent', color: 'inherit', fontSize: 13, fontFamily: 'inherit',
-  },
-  listCaption: {
-    display: 'flex', justifyContent: 'space-between', gap: '4px 12px', flexWrap: 'wrap',
-    fontSize: 11.5, color: TOKEN.muted, marginTop: 2, marginBottom: -7,
   },
 
   list: { display: 'flex', flexDirection: 'column', gap: 10 },
@@ -115,22 +95,9 @@ export const S = {
   metaLabel: { fontSize: 11.5, color: TOKEN.muted, flexShrink: 0 },
   model: { fontFamily: MONO, fontSize: 12.5, fontWeight: 500, color: TOKEN.primary, overflowWrap: 'anywhere', minWidth: 0, maxWidth: '100%' },
   provider: { fontFamily: MONO, fontSize: 11.5, color: TOKEN.muted, paddingLeft: 8, borderLeft: `1px solid ${TOKEN.borderStrong}`, overflowWrap: 'anywhere', minWidth: 0, maxWidth: '100%' },
-  glyphs: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', minWidth: 0 },
   glyph: chip,
-  metaValue: { fontFamily: MONO, fontVariantNumeric: 'tabular-nums' },
-  modeChip: { ...chip, color: TOKEN.accent, background: TOKEN.accentSoft },
-  chip: { ...chip, fontSize: 10.5 },
   dirtyChip: { ...chip, fontSize: 10.5, color: TOKEN.warn, background: TOKEN.warnSoft },
-  draftActions: {
-    display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
-    padding: '9px 16px', borderTop: `1px solid ${TOKEN.divider}`,
-  },
-
-  addHead: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12, padding: '16px' },
-  addIntro: { display: 'flex', flex: '1 1 220px', flexDirection: 'column', gap: 3, minWidth: 0 },
-  body: { display: 'flex', flexDirection: 'column', gap: 20, padding: 16, borderTop: `1px solid ${TOKEN.divider}` },
-  group: { display: 'flex', flexDirection: 'column', gap: 12 },
-  groupTitle: { fontSize: 12.5, fontWeight: 600, color: TOKEN.primary },
+  body: { display: 'flex', flexDirection: 'column', gap: 13, padding: '12px 14px', borderTop: `1px solid ${TOKEN.divider}` },
   fieldLabel: { fontSize: 12, color: TOKEN.secondary, marginBottom: 6, display: 'block' },
   field: { display: 'flex', flexDirection: 'column', minWidth: 0 },
   grid: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12, alignItems: 'start' },
@@ -159,7 +126,7 @@ export const S = {
 } satisfies Record<string, React.CSSProperties>
 
 export const BANNER = {
-  ok: { ...S.banner, background: TOKEN.successSoft },
+  ok: { ...S.banner, background: TOKEN.successSoft, color: TOKEN.success },
   error: { ...S.banner, background: TOKEN.dangerSoft },
   warn: { ...S.banner, background: TOKEN.warnSoft },
   info: { ...S.banner, background: TOKEN.inset },
@@ -172,10 +139,56 @@ export const SETTINGS_CSS = `
 .dsh-library :is(button, input, textarea, select, summary):focus-visible {
   outline: 2px solid ${TOKEN.accent}; outline-offset: 3px;
 }
-.dsh-library label:has(input[aria-label="筛选子代理"]):focus-within {
+.dsh-library .library-search:focus-within {
   outline: 2px solid ${TOKEN.accent}; outline-offset: 2px;
 }
-.dsh-library input[aria-label="筛选子代理"]:focus-visible { outline: none; }
+.dsh-library .library-search input:focus-visible { outline: none; }
+.dsh-library .library-panel { display: grid; gap: 14px; min-width: 0; }
+.dsh-library .library-tabs { display: flex; gap: 18px; border-bottom: 1px solid ${TOKEN.border}; }
+.dsh-library .library-tabs button {
+  padding: 6px 3px 8px; border: 0; border-bottom: 2px solid transparent;
+  background: transparent; color: ${TOKEN.secondary}; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.dsh-library .library-tabs button[aria-selected=true] { color: ${TOKEN.accent}; border-color: currentColor; }
+.dsh-library .library-editor { min-width: 0; border: 0; margin: 0; }
+.dsh-library h3 { margin: 0; font-size: 13px; font-weight: 650; }
+.dsh-library .library-editor textarea { min-height: 51px !important; }
+.dsh-library .library-editor [data-field=assignment] { min-height: 35px !important; }
+.dsh-library .library-editor input:read-only { background: ${TOKEN.inset} !important; }
+.dsh-library .library-members-head {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
+  gap: 5px 10px; padding-top: 8px; border-top: 1px solid ${TOKEN.border};
+}
+.dsh-library .library-members { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.dsh-library .library-members li {
+  display: grid; gap: 7px; min-width: 0; padding: 8px 10px 10px;
+  border: 1px solid ${TOKEN.border}; border-radius: 8px; background: var(--dsw-alias-bg-base, transparent);
+}
+.dsh-library .library-member-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; font-size: 12px; }
+.dsh-library .library-member-head button { min-height: 27px !important; padding: 2px 6px !important; }
+.dsh-library .library-link {
+  border: 0 !important; padding: 0 !important; min-height: 0 !important; display: inline !important;
+  color: ${TOKEN.accent} !important; white-space: normal !important; text-align: left; text-decoration: underline; overflow-wrap: anywhere;
+}
+.dsh-library .library-field-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 8px; padding-top: 2px; }
+.dsh-library .library-field-actions > button { min-height: 24px !important; }
+.dsh-library .library-field-note { padding-top: 4px; }
+.dsh-library .library-field-error { color: ${TOKEN.danger}; font-size: 11.5px; line-height: 1.65; overflow-wrap: anywhere; }
+.dsh-library .library-field-error:not(:empty) { margin-top: 4px; }
+.dsh-library [data-field=slot][aria-invalid=true] { border-color: ${TOKEN.danger} !important; }
+.dsh-library [data-field=role-id] { user-select: text; }
+.dsh-library .library-refs ul { padding-inline-start: 19px; margin: 4px 0; }
+.dsh-library .library-dialog {
+  width: min(540px, calc(100% - 32px)); max-height: calc(100% - 32px); padding: 17px;
+  border: 1px solid ${TOKEN.borderStrong}; border-radius: 12px; background: var(--dsw-alias-bg-base, Canvas);
+  color: var(--dsw-alias-label-primary, CanvasText); box-shadow: 0 8px 30px #13182633; font: inherit; font-size: 13px;
+}
+.dsh-library .library-dialog::backdrop { background: #10152260; }
+.dsh-library .library-compare { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; margin-top: 10px; }
+.dsh-library .library-compare article { background: ${TOKEN.inset}; padding: 8px; border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.dsh-library .library-compare dl { margin: 5px 0 0; }
+.dsh-library .library-compare dt, .dsh-library .library-compare dd { display: inline; margin: 0; }
+.dsh-library .library-compare dt { font-weight: 600; margin-inline-end: 5px; }
 .dsh-library select option { background: ${TOKEN.surface}; color: ${TOKEN.primary}; }
 .dsh-library-switch {
   appearance: none; position: relative; display: inline-block; flex: none;
@@ -189,8 +202,8 @@ export const SETTINGS_CSS = `
 }
 .dsh-library-switch:checked { background: ${TOKEN.accentFill}; border-color: transparent; }
 .dsh-library-switch:checked::before { transform: translateX(12px); background: #fff; }
-@container dsh-library (max-width: 520px) {
-  .dsh-library-grid { grid-template-columns: minmax(0, 1fr) !important; }
+@container dsh-library (max-width: 285px) {
+  .dsh-library .library-grid, .dsh-library .library-compare { grid-template-columns: minmax(0, 1fr) !important; }
 }
 @media (hover: hover) {
   .dsh-library-card:hover { border-color: ${TOKEN.borderStrong}; }

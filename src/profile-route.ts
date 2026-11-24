@@ -322,7 +322,7 @@ async function atomicWrite(
 
 export type OverlayRead =
   | { ok: true, overlay?: RouteOverlay, boundHash?: string, text?: string }
-  | { ok: false, message: string }
+  | { ok: false, message: string, text?: string }
 
 /** Read one profile's route file. A missing file is "no overlay", not an error. */
 export async function readRouteOverlay(
@@ -356,7 +356,7 @@ export async function readRouteOverlay(
     const parsed = parseOverlayDocument(parseYaml(stripped))
     return { ok: true, overlay: parsed.overlay, boundHash: parsed.boundHash, text: stripped }
   } catch (error) {
-    return { ok: false, message: `profile route ${profile}/${used} is invalid: ${String(error)}` }
+    return { ok: false, message: `profile route ${profile}/${used} is invalid: ${String(error)}`, text }
   }
 }
 
@@ -470,7 +470,7 @@ async function sharedEntryConfirmedAbsent(rosterDir: string, id: string, fsp: Fs
 }
 
 /**
- * Drop overlay files only when this read proved the shared entry is gone.
+ * Find overlay files only when this read proved the shared entry is gone.
  *
  * A successful directory listing plus a per-id ENOENT re-check is the only
  * read-time signal. `unreadable` / `missing` listings, a file that was listed
@@ -478,12 +478,12 @@ async function sharedEntryConfirmedAbsent(rosterDir: string, id: string, fsp: Fs
  * profile's overlay bytes. Explicit entry deletion still uses
  * {@link deleteRouteOverlays}; this function is not that path.
  */
-export async function deleteOrphanOverlays(
+async function* orphanOverlayFiles(
   rosterDir: string,
   listing: 'ok' | 'missing' | 'unreadable',
   presentIds: ReadonlySet<string>,
   fsp: FsPort = nodeFsPort,
-): Promise<void> {
+): AsyncGenerator<string> {
   if (listing !== 'ok') return
   const root = nodePath.join(rosterDir, PROFILE_ROUTES_DIR)
   let profiles: string[]
@@ -512,11 +512,32 @@ export async function deleteOrphanOverlays(
       const id = lower.endsWith('.yaml') ? lower.slice(0, -5) : lower.slice(0, -4)
       if (presentIds.has(id)) continue
       if (!await sharedEntryConfirmedAbsent(rosterDir, id, fsp)) continue
-      try {
-        await fsp.unlink(nodePath.join(dir, name))
-      } catch (error) {
-        if (!isEnoent(error)) throw error
-      }
+      yield nodePath.join(dir, name)
+    }
+  }
+}
+
+export async function hasOrphanOverlays(
+  rosterDir: string,
+  listing: 'ok' | 'missing' | 'unreadable',
+  presentIds: ReadonlySet<string>,
+  fsp: FsPort,
+): Promise<boolean> {
+  const first = await orphanOverlayFiles(rosterDir, listing, presentIds, fsp).next()
+  return !first.done
+}
+
+export async function deleteOrphanOverlays(
+  rosterDir: string,
+  listing: 'ok' | 'missing' | 'unreadable',
+  presentIds: ReadonlySet<string>,
+  fsp: FsPort = nodeFsPort,
+): Promise<void> {
+  for await (const file of orphanOverlayFiles(rosterDir, listing, presentIds, fsp)) {
+    try {
+      await fsp.unlink(file)
+    } catch (error) {
+      if (!isEnoent(error)) throw error
     }
   }
 }

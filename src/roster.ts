@@ -25,17 +25,9 @@ import * as nodePath from 'node:path'
 import { promises as nodeFsPromises } from 'node:fs'
 import z from '@deepseek-ai/schemastery'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
+import { validateEntryId } from './entry-id.ts'
 
-/** Entry ids are lowercase dns-ish labels. Also enforced for file names. */
-export const ENTRY_ID = /^[a-z0-9][a-z0-9-]*$/
-/** NTFS single component cap is 255; `<id>.yaml` plus headroom stays far below. */
-export const MAX_ID_LENGTH = 64
-/** Windows reserved device names — `<name>.yaml` is an illegal file name. */
-const RESERVED_NAMES = new Set([
-  'con', 'prn', 'aux', 'nul',
-  ...Array.from({ length: 9 }, (_, index) => `com${index + 1}`),
-  ...Array.from({ length: 9 }, (_, index) => `lpt${index + 1}`),
-])
+export { ENTRY_ID, MAX_ID_LENGTH, validateEntryId } from './entry-id.ts'
 
 /** Optional child tool scoping (subset semantics documented on `delegate`). */
 export interface ToolFilter {
@@ -64,13 +56,13 @@ export interface Entry {
   subagentProvider?: string
   /** Per-request output cap for the child. */
   maxTokens?: number
-  /** Per-child persona shadowing the deployment persona for this child. */
+  /** Role guidance included in the child's first task. */
   persona?: string
   /** Child tool scoping. */
   toolFilter?: ToolFilter
   /** Absolute delegation-depth cap for the child; requires provider depthLimit. */
   maxDepth?: number
-  /** `one-shot` (default) or `continuable` (durable, resumable background child). */
+  /** Historical setting retained for existing files. Native dispatch ignores it. */
   backgroundMode?: 'one-shot' | 'continuable'
 }
 
@@ -87,7 +79,7 @@ export const EntrySchema: z<Entry> = z.object({
     deny: z.array(z.string()).default(undefined as unknown as string[]),
   }).default(undefined as unknown as { allow: string[]; deny: string[] }),
   maxDepth: z.natural().max(Number.MAX_SAFE_INTEGER),
-  backgroundMode: z.union(['one-shot', 'continuable'] as const).default('one-shot'),
+  backgroundMode: z.union(['one-shot', 'continuable'] as const),
 })
 
 const ENTRY_KEYS = new Set([
@@ -99,7 +91,7 @@ const ENTRY_KEYS = new Set([
 export interface FsPort {
   readdir(dir: string): Promise<string[]>
   readFile(path: string): Promise<Buffer>
-  writeFile(path: string, data: string): Promise<void>
+  writeFile(path: string, data: string, flag?: 'wx'): Promise<void>
   rename(from: string, to: string): Promise<void>
   unlink(path: string): Promise<void>
   mkdir(dir: string, options: { recursive: true }): Promise<void>
@@ -111,7 +103,7 @@ export const kFsPort: unique symbol = Symbol.for('dsh-subagent-library.fs-port')
 export const nodeFsPort: FsPort = {
   readdir: (dir) => nodeFsPromises.readdir(dir),
   readFile: (path) => nodeFsPromises.readFile(path),
-  writeFile: (path, data) => nodeFsPromises.writeFile(path, data, 'utf8'),
+  writeFile: (path, data, flag) => nodeFsPromises.writeFile(path, data, { encoding: 'utf8', flag }),
   rename: (from, to) => nodeFsPromises.rename(from, to),
   unlink: (path) => nodeFsPromises.unlink(path),
   mkdir: async (dir, options) => { await nodeFsPromises.mkdir(dir, options) },
@@ -122,14 +114,6 @@ const isEnoent = (error: unknown): boolean =>
 
 const defaultDelay = (ms: number): Promise<void> =>
   new Promise((resolve) => { setTimeout(resolve, ms) })
-
-/** Validate one entry id; returns the error message, or undefined when valid. */
-export function validateEntryId(id: string): string | undefined {
-  if (!ENTRY_ID.test(id)) return `id "${id}" must match ${String(ENTRY_ID)}`
-  if (id.length > MAX_ID_LENGTH) return `id "${id}" exceeds ${MAX_ID_LENGTH} characters`
-  if (RESERVED_NAMES.has(id)) return `id "${id}" is a reserved Windows device name and cannot be a roster file`
-  return undefined
-}
 
 /** Expand `~`, anchor relative paths at `~/.dsh`, keep absolutes as-is. */
 export function resolveEntriesDir(entriesDir: string | undefined, home = homedir()): string {
@@ -169,6 +153,8 @@ export interface RosterView {
   diagnostics: RosterDiagnostic[]
   /** Stable content hash of the roster rows — the UI write guard. */
   hash: string
+  /** File bytes and read failures also guard against overwriting an external edit. */
+  fileRevision: string
   /**
    * Whether the roster directory listing itself succeeded.
    * `unreadable` is not "empty": callers must not treat missing entries as deleted.
@@ -180,6 +166,8 @@ export interface RosterView {
    * absence from disk.
    */
   presentIds: ReadonlySet<string>
+  /** Named files whose contents or filename could not be trusted. */
+  unreadableIds: ReadonlySet<string>
 }
 
 /**
@@ -238,15 +226,13 @@ function hashEntries(entries: Record<string, RosterEntry>): string {
   return createHash('sha256').update(JSON.stringify(payload)).digest('hex').slice(0, 16)
 }
 
-/** Serialize an entry to YAML. Defaults are omitted (`enabled: true`,
- *  `backgroundMode: 'one-shot'`); output is UTF-8 without BOM, unwrapped. */
+/** Serialize an entry to YAML, preserving explicit legacy fields. */
 export function serializeEntry(entry: Entry, enabled = true): string {
   const record = entry as unknown as Record<string, unknown>
   const doc: Record<string, unknown> = {}
   for (const key of ['description', 'provider', 'model', 'subagentProvider', 'reasoningEffort', 'maxTokens', 'persona', 'toolFilter', 'maxDepth', 'backgroundMode']) {
     const value = record[key]
     if (value === undefined) continue
-    if (key === 'backgroundMode' && value === 'one-shot') continue
     doc[key] = value
   }
   if (!enabled) doc['enabled'] = false
@@ -262,18 +248,15 @@ export const entryFileName = (id: string): string => `${id}.yaml`
  *  survives a delete would resurrect after every restart (SUB-ROSTER-YML-001). */
 export const entryFileNames = (id: string): string[] => [`${id}.yaml`, `${id}.yml`]
 
-/** Remove a same-id `.yml` sibling (the failed-convergence residue), with
- *  bounded retries for transient Windows locks; ENOENT = already clean. */
-export async function removeYmlSibling(
-  dir: string,
-  id: string,
+/** A transient Windows file lock can delay unlink; ENOENT is already clean. */
+export async function unlinkWithRetry(
+  file: string,
   fsp: FsPort = nodeFsPort,
   delay: (ms: number) => Promise<void> = defaultDelay,
 ): Promise<void> {
-  const ymlSibling = nodePath.join(dir, `${id}.yml`)
   for (let attempt = 0; ; attempt += 1) {
     try {
-      await fsp.unlink(ymlSibling)
+      await fsp.unlink(file)
       return
     } catch (error) {
       if (isEnoent(error)) return
@@ -281,6 +264,11 @@ export async function removeYmlSibling(
       await delay(50 * 3 ** attempt)
     }
   }
+}
+
+/** Remove the noncanonical spelling after saving an entry. */
+export function removeYmlSibling(dir: string, id: string, fsp = nodeFsPort, delay = defaultDelay): Promise<void> {
+  return unlinkWithRetry(nodePath.join(dir, `${id}.yml`), fsp, delay)
 }
 
 /** Atomic single-file write: temp name in the roster dir, then rename with
@@ -295,10 +283,17 @@ export async function writeEntryFile(options: {
 }): Promise<void> {
   const fsp = options.fs ?? nodeFsPort
   const wait = options.delay ?? defaultDelay
-  await fsp.mkdir(options.dir, { recursive: true })
-  const target = nodePath.join(options.dir, entryFileName(options.id))
-  const temp = nodePath.join(options.dir, `.${options.id}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`)
-  await fsp.writeFile(temp, serializeEntry(options.entry, options.enabled ?? true))
+  await writeYamlFile(options.dir, options.id, serializeEntry(options.entry, options.enabled ?? true), fsp, wait)
+  await removeYmlSibling(options.dir, options.id, fsp, wait)
+}
+
+export async function writeYamlFile(dir: string, id: string, contents: string, fsp: FsPort, wait = defaultDelay): Promise<void> {
+  const invalid = validateEntryId(id)
+  if (invalid) throw new Error(invalid)
+  await fsp.mkdir(dir, { recursive: true })
+  const target = nodePath.join(dir, entryFileName(id))
+  const temp = nodePath.join(dir, `.${id}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`)
+  await fsp.writeFile(temp, contents)
   for (let attempt = 0; ; attempt += 1) {
     try {
       await fsp.rename(temp, target)
@@ -311,11 +306,6 @@ export async function writeEntryFile(options: {
       await wait(50 * 3 ** attempt)
     }
   }
-  // Canonicalize on save: a surviving `.yml` sibling of the same id would
-  // create a duplicate-id conflict on the next read and resurrect the OLD
-  // entry when the new `.yaml` is deleted (SUB-ROSTER-YML-001). Removing it
-  // here is the documented convergence semantics: 保存统一收敛为 `.yaml`。
-  await removeYmlSibling(options.dir, options.id, fsp, wait)
 }
 
 /** Remove every on-disk spelling that can serve one id (`.yaml` AND `.yml`);
@@ -344,7 +334,8 @@ export interface LoadRosterOptions {
 export async function loadRoster(options: LoadRosterOptions): Promise<RosterView> {
   const fsp = options.fs ?? nodeFsPort
   const diagnostics: RosterDiagnostic[] = []
-  const entries: Record<string, RosterEntry> = {}
+  const entries: Record<string, RosterEntry> = Object.create(null)
+  const revision = createHash('sha256')
 
   let names: string[]
   let listing: RosterView['listing']
@@ -365,9 +356,7 @@ export async function loadRoster(options: LoadRosterOptions): Promise<RosterView
   const presentIds = new Set<string>()
 
   const owner = new Map<string, string>()
-  /** Ids whose FILE exists but failed to load. If a legacy copy then serves
-   *  the same id, that fallback must be LOUD: delegate would run the stale
-   *  settings persona while the user believes their edit is live (A2). */
+  /** A bad file blocks edits even when a sibling or legacy copy can still be displayed. */
   const failedFileIds = new Set<string>()
   for (const name of names) {
     const lower = name.toLowerCase()
@@ -378,8 +367,10 @@ export async function loadRoster(options: LoadRosterOptions): Promise<RosterView
     // directory agents use for pre-edit copies, `_draft.yaml`, …) — skipped
     // silently, never reported as diagnostics noise.
     if (id.startsWith('_')) continue
+    revision.update(JSON.stringify(name))
     presentIds.add(id)
     if (lower !== name) {
+      failedFileIds.add(id)
       diagnostics.push({ severity: 'warning', file: name, id, message: `文件名必须全小写，已跳过 "${name}"` })
       continue
     }
@@ -389,20 +380,20 @@ export async function loadRoster(options: LoadRosterOptions): Promise<RosterView
       continue
     }
     const existing = owner.get(id)
+    let text: string
+    try {
+      text = (await fsp.readFile(nodePath.join(options.dir, name))).toString('utf8')
+      revision.update(JSON.stringify(text))
+    } catch (error) {
+      diagnostics.push({ severity: 'error', file: name, id, message: `读取失败，条目已跳过：${String(error)}` })
+      failedFileIds.add(id)
+      continue
+    }
     if (existing !== undefined) {
       diagnostics.push({ severity: 'error', file: name, id, message: `与 "${existing}" 解析出相同 id（.yaml/.yml 只能保留一个），已跳过` })
       continue
     }
     owner.set(id, name)
-    let text: string
-    try {
-      text = (await fsp.readFile(nodePath.join(options.dir, name))).toString('utf8')
-    } catch (error) {
-      diagnostics.push({ severity: 'error', file: name, id, message: `读取失败，条目已跳过：${String(error)}` })
-      owner.delete(id)
-      failedFileIds.add(id)
-      continue
-    }
     try {
       const { entry, enabled } = parseEntryDocument(parseYaml(stripBom(text)))
       entries[id] = { entry, enabled, source: 'file', file: name }
@@ -415,7 +406,7 @@ export async function loadRoster(options: LoadRosterOptions): Promise<RosterView
   for (const [id, entry] of Object.entries(options.legacy ?? {})) {
     // Invalid legacy ids can never be addressed by delegate/delete; skip them
     // silently (same posture as the red-team #2 filter on settings views).
-    if (!ENTRY_ID.test(id)) continue
+    if (validateEntryId(id)) continue
     const file = entries[id]
     if (file !== undefined) {
       diagnostics.push({
@@ -426,19 +417,20 @@ export async function loadRoster(options: LoadRosterOptions): Promise<RosterView
       continue
     }
     if (failedFileIds.has(id)) {
-      // A BROKEN file with a surviving legacy copy is the silent-stale-config
-      // trap (A2): the roster keeps working on the OLD persona while the user
-      // believes their edit is live. Escalate to a loud error.
       diagnostics.push({
         severity: 'error',
         id,
-        message: `名册文件损坏，当前由 settings 旧副本兜底——delegate 使用的是旧配置；修复或删除该文件后恢复文件优先`,
+        message: '名册文件损坏，settings 旧配置仅作展示兜底。修复或删除坏文件后才能派遣。',
       })
     }
     entries[id] = { entry, enabled: true, source: 'legacy' }
   }
 
-  return { dir: options.dir, entries, diagnostics, hash: hashEntries(entries), listing, presentIds }
+  revision.update(JSON.stringify(diagnostics))
+  return {
+    dir: options.dir, entries, diagnostics, hash: hashEntries(entries),
+    fileRevision: revision.digest('hex'), listing, presentIds, unreadableIds: failedFileIds,
+  }
 }
 
 export interface MigrationResult {

@@ -4,6 +4,35 @@
 
 This file documents user-facing changes. Format loosely follows [Keep a Changelog]; versions follow [SemVer].
 
+## [Unreleased]
+
+## [0.4.0] — 2026-11-25
+
+### 新增 / Added
+
+- 在设置页管理「角色名册」与「编队」。编队可为成员设置代号、默认分工和顺序，并查看每个成员引用的角色及其模型配置。可复制角色 ID 或直接用作成员代号，格式和重名问题随输入提示。
+  - Manage the role roster and groups in Settings. Set member slots and default assignments, reorder members, and see each member’s role and model configuration. Copy a role ID or use it as a slot, with format and duplicate checks as you type.
+- 每次派遣可为独立角色或编队成员选择 DSH 已向当前会话开放的模型和思考等级。下次派遣仍按角色的默认配置启动。
+  - Choose a session-authorized model and reasoning effort for a direct or group dispatch. Later dispatches continue to use the role defaults.
+
+### 变更 / Changed
+
+- 按角色 ID 或编队成员代号启动一名可续聊的原生子代理。同一轮可分别派遣多位成员。关闭智能体团队时仍可使用编队、分工和向父会话汇报，开启后可使用官方共享任务板。
+  - Start a resumable native subagent by role ID or group slot. Dispatch multiple members in one turn with one call per member. Groups, assignments, and parent-session reporting work with Agent Teams off. Enabling Agent Teams adds the native shared task board.
+- `delegate` 返回成员名、会话 ID 和启动路由，任务结果随后交付到父会话。原生成员列表和 `list_agents` 显示启动模型及已知思考等级。旧的前台正文、后台 Job 和 `run_in_background` 调用方式见[迁移指南](./MIGRATION.md)。
+  - `delegate` returns the member name, session ID, and launch route. Results arrive separately in the parent session. Native member titles and `list_agents` show the launch model and known reasoning effort. See the [migration guide](./MIGRATION.md) for callers that used foreground results, background jobs, or `run_in_background`.
+- 本版自有代码采用 [Apache-2.0](./LICENSE)。既有已发布版本及内联第三方代码沿用原有许可，见[第三方许可声明](./THIRD_PARTY_NOTICES.md)。
+  - Project-owned code in this release adopts [Apache-2.0](./LICENSE). Previously published versions and bundled third-party code retain their original licenses. See the [third-party notices](./THIRD_PARTY_NOTICES.md).
+
+### 修复 / Fixed
+
+- 主会话切换模型后，继承历史并跟随主会话的成员即使在切换当轮启动，也会从首个请求起采用当前模型和思考等级。角色已有模型配置或本次派遣临时选模时，首个请求也会使用本次选定的模型。
+  - A child that inherits the parent’s history and follows its model uses the parent’s current model and reasoning effort from the first request, even when dispatched in the same turn as the model switch. Configured role models and one-time overrides also take effect on the first request.
+- 直接派遣时，成员标题保留角色 ID，并在有值时显示启动模型、思考等级和简短任务描述。设置编辑遇到配置冲突时保留草稿。
+  - Direct dispatch titles retain the role ID, followed by the launch model, reasoning effort, and task summary when available. Settings keep the draft if a save encounters a configuration conflict.
+- 名册浏览和普通派遣减少写锁争用，Windows 遇到文件暂时被占用时会重试解锁。宿主未使用 profile 时，可在设置页编辑共享模型配置。
+  - Browsing the roster and dispatching members take fewer write locks. Lock cleanup retries when a file is briefly busy on Windows. On hosts without profiles, shared model settings can be edited in Settings.
+
 ## [0.3.6] — 2026-11-06
 
 ### 修复 / Fixed
@@ -137,7 +166,9 @@ This file documents user-facing changes. Format loosely follows [Keep a Changelo
 
 - 修复设置页保存 400（移除保存期工具名预检，委派期 `tools.restrict` 为准）；新条目卡补齐缺失字段。
 
-[Unreleased]: https://github.com/MaRi23333/dsh-subagent-library/compare/v0.3.5...HEAD
+[Unreleased]: https://github.com/MaRi23333/dsh-subagent-library/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/MaRi23333/dsh-subagent-library/compare/v0.3.6...v0.4.0
+[0.3.6]: https://github.com/MaRi23333/dsh-subagent-library/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/MaRi23333/dsh-subagent-library/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/MaRi23333/dsh-subagent-library/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/MaRi23333/dsh-subagent-library/compare/v0.3.2...v0.3.3

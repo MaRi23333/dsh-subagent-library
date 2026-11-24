@@ -22,6 +22,7 @@ import {
   type FsPort,
 } from '../src/roster.ts'
 import { makeMemFs } from './helpers.ts'
+import { loadGroups, lockRoster, parseGroup } from '../src/groups.ts'
 
 const ENTRY: Entry = {
   description: 'fake role',
@@ -31,6 +32,26 @@ const ENTRY: Entry = {
   persona: '你是假角色',
   backgroundMode: 'continuable',
 }
+
+test('roster unlock retries transient Windows locks and accepts an already absent lock', async () => {
+  const fs = makeMemFs()
+  const unlock = await lockRoster('/roster', fs)
+  const unlink = fs.unlink.bind(fs)
+  const errors = ['EPERM', 'EBUSY']
+  let attempts = 0
+  fs.unlink = async file => {
+    const code = errors[attempts++]
+    if (code) throw Object.assign(new Error(code), { code })
+    await unlink(file)
+  }
+  await unlock()
+  assert.equal(attempts, 3)
+  assert.deepEqual(fs.files(), {})
+  const second = await lockRoster('/roster', fs)
+  await unlink('/roster/.roster-write.lock')
+  await second()
+  assert.equal(attempts, 4, 'ENOENT needs no retry')
+})
 
 test('validateEntryId enforces the roster file constraints', () => {
   assert.equal(validateEntryId('a'), undefined)
@@ -63,7 +84,7 @@ test('parseEntryDocument validates, rejects unknown keys, and applies schema def
 
   const defaulted = parseEntryDocument({ description: 'x' })
   assert.equal(defaulted.enabled, true)
-  assert.equal((defaulted.entry as Entry & { backgroundMode?: string }).backgroundMode ?? 'one-shot', 'one-shot')
+  assert.equal(defaulted.entry.backgroundMode, undefined)
 
   assert.throws(() => parseEntryDocument({ typo_field: 'x' }), /未知字段/)
   assert.throws(() => parseEntryDocument({ description: 'x', enabled: 'yes' }), /enabled/)
@@ -84,10 +105,10 @@ test('serializeEntry omits defaults and round-trips through YAML', () => {
   assert.equal(back.enabled, true)
   assert.deepEqual(back.entry, ENTRY)
 
-  // Schema defaults are omitted: `backgroundMode: 'one-shot'` and
-  // `enabled: true` never land in the file.
+  // Existing explicit modes remain available to a downgraded reader.
   const plain = serializeEntry({ ...ENTRY, backgroundMode: 'one-shot' }, true)
-  assert.doesNotMatch(plain, /backgroundMode/)
+  assert.match(plain, /backgroundMode: one-shot/)
+  assert.doesNotMatch(serializeEntry({ description: 'new' }), /backgroundMode/)
   assert.doesNotMatch(plain, /enabled/)
 
   const disabled = serializeEntry(ENTRY, false)
@@ -295,4 +316,27 @@ test('migrateLegacyEntries records per-entry write failures instead of aborting 
   assert.deepEqual(result.imported, ['fine'])
   assert.match(result.diagnostics[0]?.message ?? '', /disk full/)
   assert.ok(base.files()['/roster/fine.yaml'] !== undefined)
+})
+
+test('group schema rejects invalid IDs, unknown properties, duplicate and empty slots', () => {
+  const base = { description: 'Shared work', members: [{ slot: 'first', role: 'worker' }] }
+  for (const input of [
+    { ...base, provider: 'extra' }, { ...base, description: ' ' }, { ...base, enabled: 0 }, { ...base, members: [] },
+    { ...base, members: [...base.members, ...base.members] },
+    ...[{ role: 'bad_id' }, { slot: '../x' }, { assignment: 1 }, { transport: 'fork' }]
+      .map(fields => ({ ...base, members: [{ ...base.members[0], ...fields }] })),
+  ]) assert.throws(() => parseGroup(input))
+  assert.deepEqual(parseGroup(base), base)
+})
+
+test('broken and case-colliding groups stay isolated while healthy groups remain readable', async () => {
+  const valid = 'description: work\nmembers:\n  - slot: first\n    role: constructor\n'
+  const fs = makeMemFs({
+    '/roster/_groups/ok.yaml': valid, '/roster/_groups/broken.yaml': 'bad: [\n',
+    '/roster/_groups/DUAL.yaml': valid, '/roster/_groups/dual.yaml': valid,
+  })
+  const { groups, groupDiagnostics } = await loadGroups('/roster', fs)
+  assert.deepEqual(Object.keys(groups), ['ok'])
+  assert.deepEqual(groupDiagnostics.map(d => d.id).sort(), ['broken', 'dual'])
+  assert.equal(groups.ok.members[0].role, 'constructor')
 })

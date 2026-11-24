@@ -1,7 +1,7 @@
 {
   "name": "dsh-subagent-library",
-  "version": "0.3.6",
-  "description": "Named subagent library for DeepSeek Harness: a directory-backed roster with model, role prompt, depth and background-mode settings, exposed through list_subagents, delegate, a /subagent command and a Settings page.",
+  "version": "0.4.0",
+  "description": "Manage reusable roles and groups in DeepSeek Harness Settings and delegate one native subagent at a time.",
   "keywords": [
     "deepseek-harness",
     "dsh",
@@ -69,7 +69,7 @@
     "check:pack": "node scripts/check-pack.mjs",
     "prepack": "pnpm run build"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.1",
     "yaml": "^2.9.1"

@@ -8,32 +8,17 @@
 
 <p align="center">
   <img src="https://img.shields.io/github/actions/workflow/status/MaRi23333/dsh-subagent-library/ci.yml?style=flat-square&label=CI" alt="CI" />
-  <img src="https://img.shields.io/github/license/MaRi23333/dsh-subagent-library?style=flat-square" alt="License: MIT" />
-  <img src="https://img.shields.io/badge/DeepSeek%20Harness-0.2.1--rc.2-4d6bfe?style=flat-square" alt="DeepSeek Harness 0.2.1-rc.2" />
+  <img src="https://img.shields.io/github/license/MaRi23333/dsh-subagent-library?style=flat-square" alt="License: Apache-2.0" />
+  <img src="https://img.shields.io/badge/DeepSeek%20Harness-0.2.2--rc.5-4d6bfe?style=flat-square" alt="DeepSeek Harness 0.2.2-rc.5" />
 </p>
 
 ## Overview
 
-A named subagent roster plugin for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) desktop and Web interfaces: turn your recurring roles (code review, red team, multimodal understanding…) into a persistent named roster with model, role prompt, depth and background-mode settings. Then **just tell the main agent "do this with xxx"** — the model picks and dispatches through two tools by itself:
+Save the roles you use often in DeepSeek Harness Desktop or Web. For example, create a role called “Code reviewer”, choose its model and prompt, then say “Ask Code reviewer to check these changes.” Groups let you reference those same roles by slot and give each slot its own assignment.
 
-- `list_subagents` — lists roster entries (id / role description / model) so the model can pick a suitable one;
-- `delegate` — dispatches work by `library_id`: foreground wait, background one-shot, or a continuable (resumable) subagent, per the entry's configuration.
+**Groups work with Agent Teams switched off.** Each delegation starts one native child and returns its host-assigned name. The parent can dispatch independent assignments in the same turn with one call per member. It can wait for a member's findings when another assignment depends on them. The host delivers each completion to the online parent. Enabling Agent Teams also gives the tree access to the official shared task board.
 
-Available in every conversation (any agent preset), **no slash command needed**; the `/subagent` command is only for humans to peek at the roster in the command palette.
-
-Adding entries needs no hand-written config either: ask the main agent to do it, or edit visually in the settings page. Since 0.3 the roster is stored as **one YAML file per named subagent** (default directory `~/.dsh/subagents/`), hot-reloaded, comment-friendly and versionable per file.
-
-> Distinction from the official capabilities: the official `subagent` tool dispatches ad-hoc tasks (you describe the task each time), and the official `list_agents` lists *running* child instances; this plugin maintains a **persistent named roster** (edited visually in a settings page, hot-reloaded). The model picks an entry with `list_subagents` and dispatches by id with `delegate`.
-
-> **Upgrading from 0.2.x?** Since 0.3 the roster is directory-backed (one YAML file per subagent). Your legacy config **migrates automatically**; after verifying it, clear the old `entries` section for your host generation. [MIGRATION.md](./MIGRATION.md) documents the config locations, failure/retry behavior, and rollback limits; [CHANGELOG.md](./CHANGELOG.md) lists all changes.
-
-[Install](#install) · [Your first delegation](#your-first-delegation) · [Configuration reference](#configuration)
-
-## Host and desktop compatibility
-
-**0.3.5 targets DSH `0.2.1-rc.2`:** fixes startup failures for continuable and one-shot subagents, and cancellation that failed to stop background children. Foreground one-shot, continuable, background startup and cancellation of running jobs have been checked on that desktop host. See [Configuration](#configuration) for role-prompt and tool-filter limitations, and [CHANGELOG.md](./CHANGELOG.md) for the full update.
-
-The desktop client uses the Web plugin UI, so no separate desktop-specific package is needed. The legacy start paths remain, but this release's live checks target `0.2.1-rc.2`; model calls still depend on each provider's configuration and service. Roster directories, profile routes and migration rules are unchanged, so no new migration is needed.
+Version 0.4.0 targets DSH `0.2.2-rc.5` and requires native subagents that can be addressed by name for follow-up messages. To upgrade from an earlier version, see the [migration guide](./MIGRATION.md) and [changelog](./CHANGELOG.md).
 
 ## Install
 
@@ -46,7 +31,7 @@ Desktop and Web have separate plugin installations and activation states; instal
 3. Click **Enable now** when installation finishes. Closing the completed-install dialog leaves the plugin disabled.
 4. Restart only if the UI asks you to: fully exit with **Quit** in the application menu, then reopen the app. Closing a window may only hide it.
 
-Once enabled, find **子代理库 (Subagent Library)** in Settings; the top of the page shows entry counts and the roster directory.
+Once enabled, open **子代理库 (Subagent Library)** in Settings and choose the role roster or groups tab. The storage and backup section shows the roster directory.
 
 <details>
 <summary>Alternative: use the desktop-bundled CLI (Windows / macOS)</summary>
@@ -95,179 +80,70 @@ dsh plugin --profile web add /absolute/path/to/dsh-subagent-library
 
 ## Your first delegation
 
-Start with a main conversation whose model already replies normally. This example uses that session's model to reorganize supplied text; it needs no separate provider setup or file/web tools. The settings UI currently uses Chinese labels; their English meanings are given below.
-
-### 1. Create a minimal role
-
-Without existing roster files or legacy configuration, the roster starts empty. The plugin does not add sample roles automatically.
-
-1. Open **Settings → 子代理库 (Subagent Library)**. An empty roster shows the creation form immediately; otherwise click **＋ 新增子代理 (Add subagent)**.
-2. Set **ID** to `text-helper` and **描述（模型可见） (Description, visible to the model)** to `Organize short text supplied by the main conversation.` If that ID already exists, choose an unused one and replace it in the example below too.
-3. Leave **模型 (Model), Provider, 角色提示词 (Role prompt), 禁用工具 (Denied tools), and the other optional fields blank**. Keep **后台模式 (Background mode)** at `one-shot`, then click **创建子代理 (Create subagent)**. This button saves immediately and enables the new entry; no second save is needed.
-
-### 2. Ask the main agent to list and delegate
-
-Back in the main conversation, send:
-
-```text
-Call list_subagents first and confirm that text-helper is available. Then use delegate to give it this task in the foreground:
-Turn "apple, banana, pear" into a numbered list, keeping that order. Use only this text and do not call other tools.
-Pass the subagent's result back to me.
-```
-
-Look for `text-helper` in the `list_subagents` result, followed by a `delegate` call returning the child's numbered list. A direct answer from the main agent without a delegation call does not confirm that this flow worked. `/subagent` can display the roster, but does not perform the delegation.
-
-Delegation still calls the model service. "Do not call other tools" is a task instruction; the host controls tool permissions. Per-entry `toolFilter` is unavailable on DSH 0.2.1, and a role name or prompt does not guarantee read-only access. See the [configuration limitations](#configuration).
-
-### 3. If it does not work
-
-- **Entry missing:** confirm you clicked **创建子代理 (Create subagent)**, then use **刷新 (Refresh)** in Settings and check diagnostics. If the entry is disabled, switch it to **已启用 (Enabled)** and save.
-- **Tools missing:** confirm the plugin is enabled in the desktop or Web instance you are using, then check tool availability for the current conversation.
-- **Model startup fails:** first check that the main conversation can reply; leave both Provider and Model blank on the entry. Gray placeholder examples are not your configured routes. Follow the actual error for service authentication or quota issues.
-
-<details>
-<summary>Optional: create the same minimal role with YAML</summary>
-
-Use either this file method or the UI steps above. Create `text-helper.yaml` in the roster directory shown in Settings (create the directory if needed; do not overwrite an existing entry):
+Open the Subagent Library in Settings, switch to the role roster, and create a role with ID `text-helper` and a description. Leave the route empty to use the session model. You can also create the equivalent `text-helper.yaml` in the roster directory (default `~/.dsh/subagents/`).
 
 ```yaml
-description: Organize short text supplied by the main conversation.
+description: Organize text supplied by the parent.
+persona: Preserve proper names from the source.
 ```
 
-The filename supplies the ID. Omitting the other fields keeps the entry enabled and uses the session's model. Changes take effect without a restart. See [Configuration](#configuration) for more fields.
+Ask the main agent to call `list_subagents()`, then `delegate({library_id:"text-helper", prompt:"Number apple, banana and pear in their original order."})`. The receipt's `name` addresses the native member. The parent receives the result separately. You can also manage roles in Settings.
 
-</details>
+## Groups and slots
 
-## Screenshots
-
-<p align="center">
-  <img src="./assets/readme/screenshot-settings.png" width="75%" alt="Subagent Library settings: layered, collapsible cards and roster filtering" /><br>
-  <em>Cards start collapsed for a quick view of roles, models and execution settings. Filter and expand to edit; enable-state changes take effect after saving.</em>
-</p>
-
-<p align="center">
-  <img src="./assets/readme/screenshot-command-palette.png" alt="The /subagent command in the command palette" /><br>
-  <em>The <code>/subagent</code> command (quick roster viewer)</em>
-</p>
-
-<p align="center">
-  <img src="./assets/readme/screenshot-roster.png" width="75%" alt="/subagent output: the named subagent roster" /><br>
-  <em>Roster output example: one-line role description + model route + continuable marker per entry</em>
-</p>
-
-## Settings page
-
-A **子代理库 (Subagent Library)** page appears under Settings. **Each entry is a card, closed by
-default**; click its name to open the editor.
-
-- **Layered cards** separate the name and enable switch, a description of up to two lines,
-  the model and provider, and a wrapping group of execution settings. Long names and model
-  routes wrap without squeezing the description or hiding the switch.
-- A **summary band** stays at the top of the page: entry / enabled / disabled / unsaved counts
-  plus the roster directory.
-- A **filter box** matches id, description, model and more; Expand/collapse all helps in a long
-  roster.
-- **Expanded**, fields are grouped as Overview (description) / Routing & execution (provider,
-  model, transport, background mode, reasoning effort, depth, output cap) / Tools & prompt
-  (denied tools, persona), with Revert / Delete / Save at the bottom. Fields use two columns
-  in wider panels and one in narrow panels, with host light/dark themes and keyboard support.
-- Toggling enable state creates a draft. The collapsed card exposes an unsaved badge and
-  Revert / Save changes; the setting takes effect only after saving. Saving one entry does
-  not submit other drafts, and Revert restores the entire saved entry.
-- Disabled entries appear last; entries marked as legacy are promoted to files on save.
-  Storage and backup details are available in a disclosure at the bottom of the page.
-
-Saved changes are written back to `<id>.yaml` in the roster directory and hot-reloaded.
-
-> **Security note:** the roster settings endpoint (`/subagent-library/api`) follows the
-> DSH Web Host's local trust boundary — the plugin itself adds no separate authentication
-> layer. If you bind DSH Web to a LAN, the public internet, or a reverse proxy, put proper
-> authentication and access control in front of it; do not expose this endpoint to
-> untrusted clients — subagent personas and configuration may contain internal working rules.
-
-## Configuration
-
-Since 0.3 the roster is a directory with **one file per named subagent** (hot-reloaded, no restart needed):
-
-```
-~/.dsh/subagents/
-  k3-reviewer.yaml     # id = file name
-  glm-reader.yaml
-  _backups/            # backup area: copy the original here before editing (ignored by the plugin)
-  README.md            # optional: conventions for agents operating in this directory
-  ...
-```
-
-> **Backup convention** — the plugin never auto-backs up. By convention, agents (or humans) copy the original file into `_backups/` before editing (suggested name `<id>.<yyyymmdd-hhmm>.yaml`). Anything `_`-prefixed is treated as non-roster content and silently ignored.
-
-Where the plugin-level options live **depends on the host version**. Use one of these two shapes:
-
-**DSH ≤0.1.6:** edit `~/.dsh/settings.yaml`.
+Open the Groups tab, create a group with an ID and description, then select a role and give each member a unique code. A role can appear more than once, with a different assignment for each member. Save the group to make it available for dispatch. The equivalent file is `_groups/text-review.yaml` under the roster directory. The YAML field `slot` holds the member code.
 
 ```yaml
-subagent-library:
-  entriesDir: ~/.dsh/subagents
-  subagentProvider: spawn
-  # entries: (optional, legacy) the 0.2.x inline roster remains a read-only
-  # fallback throughout 0.3.x — files win; removal planned for 0.4
+description: Extract facts and open questions from supplied material.
+instructions: Include the source for each finding.
+members:
+  - slot: facts
+    role: text-helper
+    assignment: Extract facts supported by the source.
+  - slot: questions
+    role: text-helper
+    assignment: Identify missing information.
 ```
 
-**DSH ≥0.1.7:** edit the **current profile's** (`web` or `desktop`) `cordis.patch.yml`, under `config` on its `- id: subagent-library` entry. Desktop and web do not call each other's model routes: a shared-roster `provider` that is not registered in the current profile is not used, and the child inherits this session's model. Provider/model saved on the settings page is stored for the current profile only.
+| Action | Tool call |
+| --- | --- |
+| Browse groups | `list_subagents({kind:"groups"})` |
+| Inspect member keys, model settings and assignments | `list_subagents({group_id:"text-review"})` |
+| Dispatch one member | `delegate({group_id:"text-review", slot:"facts", prompt:"Check the paragraph above."})` |
+
+Browsing starts zero agents. The `questions` slot starts only on a separate call selecting it. A direct dispatch sends the role persona and task. A group dispatch also includes group instructions and the selected slot's assignment in the child's first message. Each start resolves the current role and profile route. Existing children keep their own sessions. Use `/subagent` to inspect the roster and groups from the command palette.
+
+Use `/subagent groups text-review` to see which members have a configured model and which inherit the parent model. A role can inherit the model and set its own reasoning effort. After dispatch, the native subagent menu and `list_agents` show the launch model and known effort in the member description, for example `text-review/facts [model-a · high]`. Expand the `delegate` receipt for the full `provider`, `model` and `reasoningEffort` values when available.
+
+To change the model for one dispatch, open Plugins in the DSH sidebar, open the built-in Subagent configuration and enable Model selection. Select the allowed models, save, and start a new parent session. Ask the parent to use the role default for one member and an authorized model for the other. It can discover choices with the native `list_subagent_models` tool and pass both `provider` and `model` to `delegate`. The optional `reasoning_effort` selects an effort for that model. Omitting it uses the selected model's default. Subsequent dispatches use the saved role settings again.
+
+In a session without a recorded allowlist, an explicit selection is limited to the current parent provider and model. On a host that cannot read authorization, dispatch with the saved role settings remains available. Agent Teams is optional.
+
+## Configuration and migration
+
+| Location or field | Behavior |
+| --- | --- |
+| `<entriesDir>/<role-id>.yaml` | Shared role with required `description`. Optional fields include `persona`, `enabled`, model route, `maxTokens`, `maxDepth` and `subagentProvider`. |
+| `_profiles/<profile>/<role-id>.yaml` | Profile route with `provider`, `model`, `reasoningEffort` or explicit inheritance. A shared provider missing from the current profile falls back to the session model. An invalid explicit profile route blocks the affected role. |
+| `_groups/<group-id>.yaml` | Required description and ordered nonempty `members`. Optional `name`, `enabled` and `instructions`. A member has a `slot`, a `role` and an optional `assignment`. |
+| `maxDepth` | Defaults to the host limit. An explicit value can tighten it. Zero blocks delegation. |
+| `subagentProvider` | Defaults to the `spawn` transport. `fork` can inherit completed turns from the parent. The LLM provider is configured separately. |
+| Legacy `backgroundMode` and `toolFilter` | Both former execution modes now start a resumable child asynchronously. Roles carrying a tool filter remain blocked until its removal is explicit. Set any required permission boundaries in the host. |
+
+On hosts with profiles, Settings saves model edits in the current profile. On hosts without profiles, the same editor changes the shared default route. Clear it to follow the session model. Profile overrides bound to the old shared route need to be set again after the default changes.
+
+IDs and slot keys use lowercase letters, digits and hyphens, start with a letter or digit, and are at most 64 characters. Windows reserved device names are excluded. Disabling a group leaves its enabled roles available for direct use. Remove all group references before deleting a role. Settings detect stale writes. Hand-edited YAML is read on the next operation.
+
+Configure the base directory and default transport on the plugin row of the current profile's `cordis.patch.yml`:
 
 ```yaml
 - id: subagent-library
   config:
     entriesDir: ~/.dsh/subagents
     subagentProvider: spawn
-    # entries: (optional, legacy) the 0.2.x inline roster remains a read-only
-    # fallback throughout 0.3.x — files win; removal planned for 0.4
 ```
 
-One entry file (`k3-reviewer.yaml`):
-
-```yaml
-description: Code review on Kimi K3-256K, with image walkthroughs
-provider: kimi-coding
-model: k3-256k
-persona: |
-  You are an independent review agent running on Kimi K3-256K…
-maxDepth: 1
-backgroundMode: continuable
-```
-
-> **DSH 0.2.1-series limitations:** the role prompt is sent in the first task message, not enforced as a system-level permission boundary. Per-entry `toolFilter` is unavailable, and entries containing it are refused. The example above therefore omits tool filtering and **does not guarantee read-only access**. Configure the required permissions in the host for read-only or tool-isolated work; a role name or prompt alone is not enough. The field table below also covers older hosts.
-
-Entry fields:
-
-| Field | Required | Notes |
-|---|---|---|
-| `id` (= file name) | yes | `<id>.yaml`; the id must match `[a-z0-9][a-z0-9-]*`, length ≤ 64 (Windows reserved device names con/nul/aux… are rejected) |
-| `description` | yes | Role description, shown to the model by `list_subagents` |
-| `provider` | no | **LLM route** (e.g. `deepseek-official`, `kimi-coding`); defaults to the caller's default |
-| `model` | no | LLM model id; defaults to the caller's session model |
-| `reasoningEffort` | no | Thinking effort: adapter-owned id (e.g. `max` / `high` / `medium` / `low`); empty follows the parent session default. Rides the official `agentOptions.reasoningEffort` override; when the child model route differs, the harness auto-drops the inherited effort, so unset values never leak across models. Only id-shaped values (alphanumerics and `._-`) are accepted; anything else is rejected on save |
-| `subagentProvider` | no | **Subagent transport** (a `ctx.subagents` provider such as `spawn`); defaults to the plugin-level default `spawn` |
-| `maxTokens` | no | Subagent output cap |
-| `persona` | no | Subagent role prompt. **DSH ≤0.2.0 hosts**: deployed as a system persona with strict `{{…}}` template interpolation (same semantics as deployment personas) — an unregistered variable (e.g. `{{user}}`) fails child activation. **DSH ≥0.2.1 hosts**: the start request has no persona field; the role is folded into the first task message under a `Role persona:` prefix — effective for the first turn, does NOT shadow a deployment persona, is not guaranteed to survive continuation turns or context compaction, and `{{…}}` is no longer interpolated (raw concatenation). A standalone `agentPreset` is deliberately not used to carry the role: an independent preset replaces the parent preset composition and drops the parent session's tools |
-| `toolFilter` | no | `allow`/`deny` tool-name lists (deny write-class tools for read-only roles). **Read-only/restricted roles should also deny `list_subagents`/`delegate`** so children are not taught by the global prompt to re-delegate in a chain. Names are resolved against the **calling session's restrictable set** at delegation (not "visibility"): names that session cannot apply are ignored and annotated with the reason (`本会话不存在` / `本会话专属工具`) in the delegate result and the `list_subagents` catalog — one shared entry never fails a whole delegation because a session lacks a tool. **An `allow` list that no name applies to refuses the delegation** (otherwise "keep only these" would silently become "keep nothing"). Registries without `view()` fall back to visibility, where scope-local names still make delegation fail loudly. Saves are not pre-validated. **DSH ≥0.2.1 hosts cannot enforce per-entry tool filters**: entries carrying `toolFilter` are refused at delegate time (marked undelegable in the catalog, warned at save time); such entries only work on ≤0.2.0 hosts |
-| `maxDepth` | no | Delegation depth cap; **when unset, defaults to 3 when the transport supports depthLimit** (aligned with the official subagent tool to prevent chained recursive delegation; the harness itself has no global depth cap). Transports without depthLimit stay uncapped |
-| `backgroundMode` | no | `one-shot` (default, omitted in files) / `continuable` (resumable) |
-| `enabled` | no | Write `enabled: false` to disable an entry (it stays visible in the directory and the settings page; `delegate` refuses it); omit or set `true` to enable |
-
-**Broken files never brick the roster**: files that fail to parse or validate are skipped, and the reason is surfaced as diagnostics in `list_subagents`, the `/subagent` command, and the settings page; `.yaml`/`.yml` duplicate ids and wrongly-cased file names are reported the same way.
-
-**Migrating from 0.2.x**: on first roster use, the old `entries` section is exported **entry by entry** to `<id>.yaml` (ids with an existing file are skipped — hand-written files are never overwritten); legacy copies are KEPT as a rollback, and files take precedence. When saving through the settings page, an unchanged canonical `.yaml` row is skipped so its hand-written comments stay intact; an unchanged `.yml` row is still rewritten as generated `.yaml` and loses its comments. A write/convergence failure returns HTTP 500 and may leave a partial result. If the canonical `.yaml` skip path cannot sweep a same-id `.yml`, the save returns 200 with a warning and the duplicate diagnostic remains until a retry succeeds. Once confirmed, clear only the legacy `entries` key and keep the other keys on that same config row (reading is removed in 0.4).
-
-The 0.2.8 legacy `entries` fallback is for DSH ≤0.1.6 only; on DSH ≥0.1.7 the plugin cannot be downgraded by itself. Host downgrade and restoration of `settings.yaml.imported` data are unverified, so no downgrade sequence is prescribed. To restore roster content, use your own `_backups/` copies and verify them manually.
-
-> Mind the two provider concepts: `provider` is the LLM route (`agentOptions.provider`),
-> while `subagentProvider` is the subagent transport (`ctx.subagents` registration name, e.g. `spawn`/`fork`/`acp`).
-
-## Design notes
-
-- Tools register on the **host plane**: no dependency on any agent preset, and switching presets never loses them;
-- Dispatch goes through the standard `ctx.subagents` seam (providers such as `spawn`), so subagents keep harness semantics: approval pinned to never, sandbox inherited from the parent session, depth caps, continuable support;
-- Entries are re-resolved from the roster directory on every operation (no cache, no watcher) — file edits take effect immediately; single-entry writes are atomic (temp file + rename with retries), concurrent writers are last-write-wins.
+Include the role files, `_profiles/` and `_groups/` in backups. The Settings endpoint `/subagent-library/api` shares the DSH Web Host access boundary. Configure host or reverse-proxy authentication when exposing it to other devices.
 
 ## Development
 
@@ -277,10 +153,10 @@ pnpm run typecheck
 pnpm run build   # host: lib/index.js; client: lib/client.js
 ```
 
-- Dev dependencies remain pinned to DSH `0.1.0-rc.6` (see package.json devDependencies); this is not the current runtime host version. See "Host and desktop compatibility" above for current support and usage feedback. If the interfaces drift on other versions, adjust against the corresponding tag of the [deepseek-harness repo](https://github.com/deepseek-ai/deepseek-harness).
+- Dev dependencies remain pinned to DSH `0.1.0-rc.6` (see package.json devDependencies); this is not the current runtime host version. If the interfaces drift on other versions, adjust against the corresponding tag of the [deepseek-harness repo](https://github.com/deepseek-ai/deepseek-harness).
 
 ## License
 
-[MIT](./LICENSE). Third-party license notices for code inlined into the build artifacts are in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
+[Apache-2.0](./LICENSE). Third-party license notices for code inlined into the build artifacts are in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
 
 This is an independent community project, not affiliated with or endorsed by DeepSeek; the `DeepSeek Harness` name is used only to identify the compatible platform.

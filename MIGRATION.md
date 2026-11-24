@@ -1,4 +1,20 @@
-# 迁移指南：0.2.x → 0.3.x（名册目录化）
+# 子代理库迁移指南 / Migration guide
+
+## 0.3.x → 0.4.0（原生异步派遣 / Native async dispatch）
+
+1. 检查宿主版本。0.4.0 面向提供具名可续聊子代理接口的 DSH，兼容基线为 `0.2.2-rc.5`。较旧宿主可继续使用与其匹配的 0.3.x。
+2. 保留名册目录及旧配置。已有角色仍可通过原来的 `library_id` 派遣，`_profiles/` 中的模型路由继续生效。编队可选，文件存放在 `_groups/<id>.yaml`，关闭智能体团队时也可使用。
+3. 更新调用方。移除 `run_in_background`，从启动回执读取 `name` 和 `subagentId`。原先解析前台正文或 `jobId` 的调用方需改为接收单独交付的任务结果。使用宿主的消息、等待和中止工具与成员交互。
+4. 检查角色限制。两种旧 `backgroundMode` 值都按异步可续聊方式启动。带 `toolFilter` 的角色仍会阻止派遣。需要强制工具限制时，先在宿主落实权限，再移除该字段。角色最大深度取宿主和角色所设上限的较小值。
+5. 切换版本前备份整个名册目录，包括 `_profiles/` 和 `_groups/`。0.3.x 的设置页只能管理角色，编队仍需在 0.4.0 中管理。
+
+1. Check your host version. Version 0.4.0 targets DSH with named, resumable subagents. Its compatibility baseline is `0.2.2-rc.5`. On an older host, keep the compatible 0.3.x release.
+2. Keep your roster directory and existing configuration. Roles keep their `library_id` and model routes in `_profiles/`. Optional groups live in `_groups/<id>.yaml` and work with Agent Teams off.
+3. Update existing callers. Remove `run_in_background` and read `name` and `subagentId` from the start receipt. Callers that parsed a foreground result or `jobId` need to handle the separately delivered task result. Use the host’s messaging, wait, and abort tools to interact with the member.
+4. Review role restrictions. Both legacy `backgroundMode` values now start an asynchronous, resumable member. A stored `toolFilter` blocks dispatch. If you still need tool restrictions, configure host permissions before removing the field. The lower of the host and role depth limits applies.
+5. Back up the roster directory, including `_profiles/` and `_groups/`, before switching versions. The 0.3.x settings page manages roles. Use 0.4.0 to manage groups.
+
+## 0.2.x → 0.3.x（名册目录化）
 
 **中文指南（English guide below）**
 
@@ -10,7 +26,7 @@
 2. **验证**：`/subagent` 或设置页能看到全部旧条目，且名册目录里多了一批 `<id>.yaml`；
 3. **清理**（可选但推荐）：设置页点「清除旧条目」，或按宿主版本手动删掉配置行/`config` 下的旧 `entries` 键，同时保留同一行的其他插件配置。
 
-旧配置在 0.3.x 全程兜底可读，不清除也不影响使用；**0.4 起才停止读取**。
+0.3.x 和 0.4.0 都可以继续读取旧配置。使用 0.4.0 时，同名角色文件损坏须先修复才能派遣。
 
 ---
 
@@ -84,7 +100,7 @@ subagent-library:
 ### 第 1 步：升级 + 重启
 
 ```sh
-npx @deepseek-ai/dsh plugin --profile web add dsh-subagent-library@latest
+npx @deepseek-ai/dsh plugin --profile web add dsh-subagent-library@0.3.6
 ```
 
 然后重启 dsh web、刷新页面。
@@ -106,7 +122,7 @@ npx @deepseek-ai/dsh plugin --profile web add dsh-subagent-library@latest
   - **DSH ≤0.1.6**：编辑 `~/.dsh/settings.yaml`，删掉 `subagent-library.entries:` 整段（保留 `subagentProvider` / `entriesDir` 等插件级键）；
   - **DSH ≥0.1.7**：旧段已被宿主导入 web profile 的 `cordis.patch.yml`——删掉其中 `id: subagent-library` 条目 `config` 下的 `entries:` 键即可；**保留同一 `config` 行里的 `entriesDir` / `subagentProvider` 等其他键**，不要删除整个条目，也可以用宿主自带配置编辑器操作。
 
-> 不清理会怎样？——什么都不会坏。文件优先生效，旧段只是躺着（设置页会持续显示提示信息）。0.4 起插件停止读取旧段，届时再删也行。
+> 不清理会怎样？——什么都不会坏。文件优先生效，旧段只是躺着（设置页会持续显示提示信息）。新版仍可读取这些副本。
 
 ## 回滚（想退回 0.2.x）
 
@@ -126,7 +142,7 @@ npx @deepseek-ai/dsh plugin --profile web add dsh-subagent-library@latest
 这些操作按文件逐个进行，不是目录级多文件事务；写入或收敛失败返回 HTTP 500，且可能已经部分完成。规范 `.yaml` 内容未变时会跳过写入并保留原文件和注释；`.yml` 内容即使未变也会收敛重写为生成的 `.yaml`，原 `.yml` 注释会丢失。若跳过路径的同名 `.yml` 清扫失败，保存仍返回 200 但带 warning，冲突诊断会持续到清扫成功；解除占用后重试保存。遇到错误先检查名册目录和 diagnostics，再重试。
 
 **Q：某个文件写坏了会怎样？**
-只有那一个条目失效：它被跳过，并在 `list_subagents`、`/subagent`、设置页 diagnostics 里给出原因，其余条目照常。改好文件即恢复。**特别注意**：如果同名条目在当前宿主配置里还有旧副本（自动迁移后旧副本仍保留；点「清除旧条目」或删除条目后才移除），插件会用**旧副本兜底继续服务**，并在 diagnostics 里以 error 标明「delegate 使用的是旧配置」——看到这条请先修文件。
+只有那一个条目失效：它被跳过，并在 `list_subagents`、`/subagent`、设置页 diagnostics 里给出原因，其余条目照常。改好文件即恢复。**特别注意**：如果同名条目在当前宿主配置里还有旧副本（自动迁移后旧副本仍保留；点「清除旧条目」或删除条目后才移除），0.3.x 曾使用旧副本派遣，0.4.0 会阻止启动该角色，以免悄悄使用旧的模型、职责或限制。
 
 **Q：`.yml` 文件会一直保持 `.yml` 吗？**
 会正常读取；但设置页保存触达该条目时，即使内容未变也会收敛为生成格式的 `.yaml`（原 `.yml` 移除，避免同 id 双文件），因此原手写注释会丢失。内容未变的规范 `.yaml` 则会跳过写入并保留注释。
@@ -186,7 +202,7 @@ On the newer host, `settings.yaml.imported` is a migration backup, not a verifie
 
 **File-name lifecycle** — Both `<id>.yaml` and `<id>.yml` are read. If both spellings already exist for one id, fix that conflict (keep one) before using the settings page. Deleting an entry removes both suffixes. Writes and deletes run per file, not as a directory-wide multi-file transaction: a write or convergence failure returns HTTP 500 and may leave a partial result. If the unchanged canonical `.yaml` skip path cannot sweep a same-id `.yml`, the save returns 200 with a warning and the duplicate diagnostic remains until a retry succeeds; inspect the roster before retrying.
 
-**Automatic migration** — on the first roster use after upgrading, each legacy entry is exported to `<id>.yaml` **only when neither `<id>.yaml` nor `<id>.yml` exists** (if either spelling exists, hand-written files are never overwritten; re-runs are idempotent). The legacy settings copies are **kept** as a rollback fallback; files take precedence. Legacy reading stays working throughout 0.3.x and is **removed in 0.4**. Deleting an entry from the settings page removes both its `<id>.yaml` and `<id>.yml` roster files **and** its legacy copy; the one-click cleanup only removes legacy copies that files already shadow and never touches roster files. Legacy copies persist after automatic migration until you clear them.
+**Automatic migration** — on the first roster use after upgrading, each legacy entry is exported to `<id>.yaml` **only when neither `<id>.yaml` nor `<id>.yml` exists** (if either spelling exists, hand-written files are never overwritten; re-runs are idempotent). The legacy settings copies are **kept** as a rollback fallback; files take precedence. Versions 0.3.x and 0.4.0 both retain legacy reading. Fix a broken same-ID file before dispatching that role. Deleting an entry from the settings page removes both its `<id>.yaml` and `<id>.yml` roster files **and** its legacy copy; the one-click cleanup only removes legacy copies that files already shadow and never touches roster files. Legacy copies persist after automatic migration until you clear them.
 
 **Rollback** — the 0.2.8 legacy `entries` fallback is for DSH ≤0.1.6 only; on DSH ≥0.1.7 the plugin cannot be downgraded by itself, and the old settings seam may return 503. Host downgrade and restoration of `settings.yaml.imported` data are unverified, so no downgrade sequence is prescribed. Legacy copies are the rollback data source: editing or deleting them (including deleting entries or one-click cleanup) makes rollback return to the snapshot as of that moment. To restore roster content, use your own `_backups/` copies and verify them manually.
 

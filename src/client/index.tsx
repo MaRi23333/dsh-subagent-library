@@ -15,6 +15,10 @@ import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import { LibrarySettings, type LibrarySettingsInjected } from './LibrarySettings.tsx'
 import { registerSettingsNavIcon } from './nav-icon.ts'
 import { en, zh } from './locales.ts'
+import type { Group, GroupMember } from '../groups.ts'
+import type { RouteFields } from '../profile-route.ts'
+
+export type { RouteFields }
 
 const NS = 'subagent-library'
 const API_PATH = '/subagent-library/api'
@@ -37,6 +41,22 @@ export interface StoredEntry {
   source?: 'legacy'
   /** How this profile resolved the model route. Wire-only; never stored. */
   routeNote?: 'profile' | 'inherit' | 'foreign-ignored' | 'profile-missing' | 'overlay-broken'
+  launchable?: boolean
+  reason?: string
+}
+
+export interface StoredMember extends GroupMember {
+  launchable?: boolean
+  reason?: string
+}
+
+export interface StoredGroup extends Group {
+  members: StoredMember[]
+}
+
+export interface RoleUsage {
+  groupId: string
+  slot: string
 }
 
 export interface LibraryDiagnostic {
@@ -50,27 +70,32 @@ export interface LibraryView {
   writable: boolean
   /** Roster directory the files live in (informational, shown in the UI). */
   dir: string
-  /** Stable content hash of the roster rows — the write guard. */
+  /** Version of the roles, groups and current profile routes used for writes. */
   hash: string
   entries: Record<string, StoredEntry>
+  sharedEntries: Record<string, StoredEntry>
+  groups: Record<string, StoredGroup>
+  roleUsages: Record<string, RoleUsage[]>
   diagnostics?: LibraryDiagnostic[]
   /** Legacy settings copies currently shadowed by a roster file — the safe
    *  one-click cleanup set for the 0.2→0.3 transition. */
   legacyCount?: number
   /** Profile this view was resolved for (`desktop`, `web`, …). */
   profile?: string
+  routeWriteProblem?: string
 }
 
 export type LibraryWrite =
-  | { op: 'save'; entries: Record<string, StoredEntry>; expectedHash?: string }
-  | { op: 'delete'; id: string; expectedHash?: string }
-  | { op: 'clear-legacy'; expectedHash?: string }
+  | { op: 'save-entry'; id: string; entry: StoredEntry; route?: RouteFields | { inherit: true }; clearToolFilter?: boolean; expectedHash: string }
+  | { op: 'save-group'; id: string; group: StoredGroup; expectedHash: string }
+  | { op: 'delete' | 'delete-group'; id: string; expectedHash: string }
+  | { op: 'clear-legacy'; expectedHash: string }
 
 export type LibraryWriteResult =
   | { ok: true; view: LibraryView }
   // A conflict carries the fresh view so the editor can merge and let the
   // user retry instead of staring at a bare error (v0.3.0 design review).
-  | { ok: false; conflict?: boolean; message?: string; view?: LibraryView }
+  | { ok: false; conflict?: boolean; error?: string; message?: string; references?: RoleUsage[]; view?: LibraryView }
 
 /** Host error codes that carry no `message`; map them to user-facing text. */
 const ERROR_TEXT: Record<string, string> = {
@@ -86,6 +111,9 @@ const ERROR_TEXT: Record<string, string> = {
   'roster-unreadable': '名册目录读取失败。',
   'write-failed': '名册文件写入失败。',
   'profile-path': '当前 profile 名称不能保存独立模型路由。',
+  'role-in-use': '有编队成员还在使用这个角色。',
+  'conflict': '配置已在别处更新，你的草稿已保留。',
+  'roster-busy': '名册正在保存其他修改，请稍后再试。',
 }
 
 interface WireView {
@@ -94,9 +122,14 @@ interface WireView {
   dir?: string
   hash?: string
   entries?: Record<string, StoredEntry>
+  sharedEntries?: Record<string, StoredEntry>
+  groups?: Record<string, StoredGroup>
+  roleUsages?: Record<string, RoleUsage[]>
+  references?: RoleUsage[]
   diagnostics?: LibraryDiagnostic[]
   legacyCount?: number
   profile?: string
+  routeWriteProblem?: string
   error?: string
   message?: string
   view?: WireView
@@ -109,11 +142,15 @@ export const parseView = (value: WireView): LibraryView => ({
   dir: value.dir ?? '',
   hash: value.hash ?? '',
   entries: value.entries ?? {},
+  sharedEntries: value.sharedEntries ?? {},
+  groups: value.groups ?? {},
+  roleUsages: value.roleUsages ?? {},
   diagnostics: value.diagnostics ?? [],
   // MUST be mapped explicitly: this drives the migration banner + clear button
   // (k3 review round 2 finding #1 — a dropped field here killed the feature).
   legacyCount: value.legacyCount ?? 0,
   ...(typeof value.profile === 'string' && value.profile !== '' ? { profile: value.profile } : {}),
+  ...(value.routeWriteProblem && { routeWriteProblem: value.routeWriteProblem }),
 })
 
 async function readView(): Promise<LibraryView> {
@@ -139,13 +176,15 @@ async function writeView(write: LibraryWrite): Promise<LibraryWriteResult> {
     })
     const body: unknown = await response.json()
     const wire = (typeof body === 'object' && body !== null ? body : {}) as WireView
-    if (response.status === 409) {
-      // The fresh view rides along: the editor merges it so the user sees the
-      // concurrent change and can re-apply theirs instead of blind-retrying.
-      return { ok: false, conflict: true, view: wire.view !== undefined ? parseView(wire.view) : undefined }
-    }
     if (!response.ok || wire.ok !== true) {
-      return { ok: false, message: wire.message ?? (wire.error !== undefined ? ERROR_TEXT[wire.error] : undefined) ?? '保存失败' }
+      return {
+        ok: false,
+        error: wire.error,
+        conflict: response.status === 409 && wire.error === 'conflict',
+        message: wire.message?.replace(/^Error:\s*/, '') ?? (wire.error ? ERROR_TEXT[wire.error] : undefined) ?? '保存失败',
+        view: wire.view && parseView(wire.view),
+        references: wire.references,
+      }
     }
     return { ok: true, view: parseView(wire) }
   } catch (error) {
@@ -158,10 +197,7 @@ export const inject = ['slots', 'locale', 'remote']
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'subagent-library: dictionaries')
 
-  // Pushed invalidation: any committed change to the subagent-library
-  // namespace re-reads the document. The push carries the new revision so a
-  // subscriber can tell its own write's echo (≤ last committed) from an
-  // external change without racing the write response.
+  // Re-read the roster when the host reports a change to this namespace.
   const listeners = new Set<(revision?: number) => void>()
   const subscribeRefresh = (fn: (revision?: number) => void): (() => void) => {
     listeners.add(fn)

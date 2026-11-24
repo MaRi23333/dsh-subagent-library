@@ -80,6 +80,33 @@ test('parseRouteOverlay rejects a mixed inherit document', () => {
   assert.throws(() => parseRouteOverlay({ inherit: true, provider: 'x' }), /cannot be combined/)
 })
 
+test('without a profile, single-entry saves can create, edit and clear the shared model route', async () => {
+  const host = makeHost()
+  const read = () => dispatch(host.web, API_PATH).then(jsonBody)
+  const save = async (description: string, route?: Record<string, unknown>) => {
+    const expectedHash = (await read()).hash
+    const res = await postJson(host.web, { op: 'save-entry', expectedHash, id: 'writer', entry: { description }, route })
+    assert.equal(res.status, 200, res.body)
+    return parseYaml(host.fs.files()['/roster/writer.yaml']!)
+  }
+  const initial = { model: 'writer-model', provider: 'models', reasoningEffort: 'extra-high', maxTokens: 430 }
+  assert.deepEqual(await save('draft', initial), { description: 'draft', ...initial })
+  assert.deepEqual(await save('updated description'), { description: 'updated description', ...initial })
+  assert.deepEqual(await save('updated description', { model: 'new' }), { description: 'updated description', model: 'new' })
+  assert.deepEqual(await save('updated description', { inherit: true }), { description: 'updated description' })
+  assert.ok(Object.keys(host.fs.files()).every(path => !path.includes('_profiles')))
+})
+
+test('a present profile with no name never falls back to editing the shared route', async () => {
+  const host = makeHost({ profileName: '', rosterFiles: { '/roster/writer.yaml': 'description: draft\nmodel: shared\n' } })
+  const current = jsonBody(await dispatch(host.web, API_PATH))
+  assert.ok(current.routeWriteProblem)
+  const result = await postJson(host.web, { op: 'save-entry', id: 'writer', expectedHash: current.hash,
+    entry: { description: 'draft' }, route: { model: 'changed' } })
+  assert.equal(result.status, 400)
+  assert.equal(parseYaml(host.fs.files()['/roster/writer.yaml']!).model, 'shared')
+})
+
 test('preserveSharedRoute keeps the other profile\'s provider while taking this profile\'s description', () => {
   const next = preserveSharedRoute(
     { description: 'edited here', provider: 'desktop-gateway', model: 'desk' },
@@ -305,6 +332,11 @@ test('an unsafe profile name does not write its route into the shared file', asy
   })
   assert.equal(rejected.status, 400)
   assert.equal(jsonBody(rejected)['error'], 'profile-path')
+  const single = await postJson(host.web, {
+    op: 'save-entry', expectedHash: before.hash, id: 'reviewer', entry: { description: 'shared role' }, route: { model: 'desk' },
+  })
+  assert.equal(single.status, 400)
+  assert.equal(jsonBody(single).error, 'profile-path')
   const shared = parseYaml(String(host.fs.files()['/roster/reviewer.yaml'])) as Record<string, unknown>
   assert.equal(shared['provider'], 'web-only')
 })
@@ -427,210 +459,6 @@ test('web still uses the shared route after desktop pins its own', async () => {
     provider: 'web-only',
     model: 'web-model',
   })
-})
-
-test('DSH startActivation host delegates a continuable persona entry without startContinuable', async () => {
-  const host = makeHost({
-    activationApi: true,
-    subagentProviders: ['spawn'],
-    rosterFiles: {
-      '/roster/ds-sa.yaml': 'description: worker\npersona: stay in role\nbackgroundMode: continuable\n',
-    },
-  })
-  const result = await host.tools.get('delegate')!.execute(
-    { library_id: 'ds-sa', prompt: 'do the task' },
-    { agent: { fake: 'parent' }, signal: new AbortController().signal },
-  ) as { kind?: string, subagentId?: string }
-  assert.equal(result.kind, 'continuable')
-  assert.equal(result.subagentId, 'fake-child')
-  const request = host.subagentStarts[0]?.request
-  assert.equal(request?.['delivery'], 'parent')
-  assert.equal(request?.['persona'], undefined)
-  assert.match(JSON.stringify(request?.['prompt']), /stay in role/)
-  assert.match(JSON.stringify(request?.['prompt']), /do the task/)
-})
-
-test('DSH startActivation host refuses a per-child toolFilter instead of dropping it', async () => {
-  const host = makeHost({
-    activationApi: true,
-    subagentProviders: ['spawn'],
-    rosterFiles: {
-      '/roster/reader.yaml': 'description: reader\npersona: read only\ntoolFilter:\n  deny: [write]\n',
-    },
-  })
-  await assert.rejects(
-    () => host.tools.get('delegate')!.execute(
-      { library_id: 'reader', prompt: 'x' },
-      { agent: { fake: 'parent' }, signal: new AbortController().signal },
-    ),
-    /cannot enforce a per-child toolFilter/,
-  )
-  assert.equal(host.subagentStarts.length, 0)
-})
-
-test('DSH startActivation host refuses toolFilter before the empty-allow-list check', async () => {
-  const host = makeHost({
-    activationApi: true,
-    subagentProviders: ['spawn'],
-    knownTools: ['write'],
-    rosterFiles: {
-      // `allow` names a tool this session cannot restrict → allowEmptied would
-      // fire first and send the user to fix a list that can never matter here.
-      '/roster/reader.yaml': 'description: reader\ntoolFilter:\n  allow: [ghost-tool]\n',
-    },
-  })
-  await assert.rejects(
-    () => host.tools.get('delegate')!.execute(
-      { library_id: 'reader', prompt: 'x' },
-      { agent: { fake: 'parent' }, signal: new AbortController().signal },
-    ),
-    /cannot enforce a per-child toolFilter/,
-  )
-})
-
-test('DSH startActivation host runs a one-shot persona entry with delivery caller', async () => {
-  const host = makeHost({
-    activationApi: true,
-    subagentProviders: ['spawn'],
-    rosterFiles: {
-      '/roster/worker.yaml': 'description: worker\npersona: stay in role\n',
-    },
-  })
-  const result = await host.tools.get('delegate')!.execute(
-    { library_id: 'worker', prompt: 'do the task' },
-    { agent: { fake: 'parent' }, signal: new AbortController().signal },
-  ) as { kind?: string, runId?: string, output?: Array<{ type: string, text: string }> }
-  assert.equal(result.kind, 'foreground')
-  assert.equal(result.runId, 'fake-child')
-  assert.equal(result.output?.[0]?.text, 'fake child reply')
-  const start = host.subagentStarts[0]
-  assert.equal(start?.request['delivery'], 'caller')
-  assert.ok(start?.signal !== undefined, 'the activation spec must carry the exec signal')
-  assert.equal(start?.request['persona'], undefined)
-  assert.match(JSON.stringify(start?.request['prompt']), /Role persona:\\nstay in role/)
-  assert.match(JSON.stringify(start?.request['prompt']), /Task:\\ndo the task/)
-})
-
-test('DSH startActivation host leaves a persona-less one-shot prompt untouched', async () => {
-  const host = makeHost({
-    activationApi: true,
-    subagentProviders: ['spawn'],
-    rosterFiles: {
-      '/roster/worker.yaml': 'description: worker\nmaxDepth: 2\n',
-    },
-  })
-  await host.tools.get('delegate')!.execute(
-    { library_id: 'worker', prompt: 'plain task' },
-    { agent: { fake: 'parent' }, signal: new AbortController().signal },
-  )
-  const prompt = JSON.stringify(host.subagentStarts[0]?.request['prompt'])
-  assert.equal(prompt.includes('Role persona'), false)
-  assert.match(prompt, /plain task/)
-  assert.equal(host.subagentStarts[0]?.request['maxDepth'], 2)
-})
-
-test('DSH startActivation host keeps enforcing the transport depthLimit guard', async () => {
-  const host = makeHost({
-    activationApi: true,
-    subagentProviders: ['spawn'],
-    providerCapabilities: { depthLimit: false },
-    rosterFiles: {
-      '/roster/worker.yaml': 'description: worker\nmaxDepth: 2\n',
-    },
-  })
-  // A ≥0.2.1 host skips the old one-shot capability block, but the transport
-  // guard must still fire BEFORE the host sees the activation (reordered
-  // guard, grok 0.3.5 minor).
-  await assert.rejects(
-    () => host.tools.get('delegate')!.execute(
-      { library_id: 'worker', prompt: 'x' },
-      { agent: { fake: 'parent' }, signal: new AbortController().signal },
-    ),
-    /cannot enforce maxDepth/,
-  )
-  assert.equal(host.subagentStarts.length, 0)
-})
-
-test('background one-shot cancel disposes an already-accepted activation', async () => {
-  const host = makeHost({
-    activationApi: true,
-    jobs: true,
-    activationHold: true,
-    subagentProviders: ['spawn'],
-    rosterFiles: {
-      '/roster/worker.yaml': 'description: worker\n',
-    },
-  })
-  const result = await host.tools.get('delegate')!.execute(
-    { library_id: 'worker', prompt: 'long task', run_in_background: true },
-    { agent: { fake: 'parent', session: { id: 'session-1' } }, signal: new AbortController().signal },
-  ) as { kind?: string, jobId?: string }
-  assert.equal(result.kind, 'background')
-  assert.equal(result.jobId, 'job-1')
-  // ≥0.2.1 registers the job under the calling SESSION id, not the Agent.
-  assert.equal(host.jobStarts[0]?.owner, 'session-1')
-  host.jobStarts[0]!.cancel('test kill')
-  host.releaseActivation()
-  const outcome = await host.jobStarts[0]!.done
-  assert.equal(outcome.status, 'killed')
-  assert.ok(host.subagentDisposes.includes('activation'), 'an accepted activation must be disposed on cancel')
-})
-
-test('foreground abort during collection disposes and fails the tool call', async () => {
-  const host = makeHost({
-    activationApi: true,
-    activationNeverSettles: true,
-    subagentProviders: ['spawn'],
-    rosterFiles: {
-      '/roster/worker.yaml': 'description: worker\n',
-    },
-  })
-  const controller = new AbortController()
-  const pending = host.tools.get('delegate')!.execute(
-    { library_id: 'worker', prompt: 'long task' },
-    { agent: { fake: 'parent' }, signal: controller.signal },
-  ) as Promise<unknown>
-  await new Promise((resolve) => setTimeout(resolve, 0))
-  controller.abort()
-  await assert.rejects(() => pending, /foreground collection aborted/)
-  assert.ok(host.subagentDisposes.includes('activation'), 'abort during collection must dispose the run')
-})
-
-test('old host still routes continuable entries through startContinuable with a persona field', async () => {
-  const host = makeHost({
-    subagentProviders: ['spawn'],
-    rosterFiles: {
-      '/roster/ds-sa.yaml': 'description: worker\npersona: stay in role\nbackgroundMode: continuable\n',
-    },
-  })
-  const result = await host.tools.get('delegate')!.execute(
-    { library_id: 'ds-sa', prompt: 'do the task' },
-    { agent: { fake: 'parent' }, signal: new AbortController().signal },
-  ) as { kind?: string, subagentId?: string }
-  assert.equal(result.kind, 'continuable')
-  assert.equal(result.subagentId, 'fake-child')
-  const request = host.subagentStarts[0]?.request
-  assert.equal(request?.['persona'], 'stay in role')
-  assert.equal(JSON.stringify(request?.['prompt']).includes('Role persona'), false)
-})
-
-test('modern catalog marks a toolFilter entry as undelegable', async () => {
-  const host = makeHost({
-    activationApi: true,
-    subagentProviders: ['spawn'],
-    rosterFiles: {
-      '/roster/reader.yaml': 'description: reader\ntoolFilter:\n  deny: [write]\n',
-      '/roster/worker.yaml': 'description: worker\n',
-    },
-  })
-  const rows = await host.tools.get('list_subagents')!.execute(
-    {},
-    { agent: { fake: 'parent' }, signal: new AbortController().signal },
-  ) as Array<Record<string, unknown>>
-  const reader = rows.find((row) => row['id'] === 'reader')
-  const worker = rows.find((row) => row['id'] === 'worker')
-  assert.match(String(reader?.['toolFilter']), /无法强制执行 toolFilter/)
-  assert.equal(worker?.['toolFilter'], undefined)
 })
 
 test('modern settings save warns that toolFilter entries cannot be delegated', async () => {

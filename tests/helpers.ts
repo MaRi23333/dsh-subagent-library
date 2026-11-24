@@ -10,6 +10,7 @@
  * resolve to undefined, unseeded services are absent).
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { Context } from '@deepseek-ai/cordis'
 import { apply, type Entry } from '../src/index.ts'
 import { kFsPort, type FsPort } from '../src/roster.ts'
 
@@ -226,54 +227,39 @@ export interface HostOptions extends SettingsOptions {
   rosterDir?: string
   /** Files the in-memory roster directory starts with (`/roster/reader.yaml` → YAML). */
   rosterFiles?: Record<string, string>
-  /** Tool names the fake registry knows (visible in a scope view). */
-  knownTools?: string[]
-  /**
-   * Names `restrict()` would admit (global + inherited). Defaults to
-   * `knownTools`; set it narrower to model scope-local tools — visible to the
-   * agent but NOT restrictable (the official `subagent` tool in DSH 0.1.2-rc.1).
-   */
-  restrictableTools?: string[]
-  /** Omit `tools.view()` to exercise the visibility fallback path. */
-  noToolView?: boolean
-  /** Subagent transport providers the fake registry knows (default: none). */
   subagentProviders?: string[]
-  /** DSH ≥0.2.1: service exposes startActivation and transports have no persona capability. */
+  inheritingProviders?: string[]
   activationApi?: boolean
-  /** Current profile name (`ctx.profileContext.name`). Absent keeps shared routes. */
   profileName?: string
-  /** LLM provider ids registered in this profile. Absent means "cannot tell". */
   llmProviders?: string[]
-  /** ≥0.2.1 activation fake: the result promise never settles (foreground abort race). */
-  activationNeverSettles?: boolean
-  /** ≥0.2.1 activation fake: startActivation waits for `host.releaseActivation()`. */
-  activationHold?: boolean
-  /** Provide a fake `ctx.get('jobs')` so background delegation can run. */
-  jobs?: boolean
-  /** Capability overrides merged over the fake transport defaults (e.g. `{ depthLimit: false }`). */
   providerCapabilities?: Record<string, boolean>
+  hostMaxDepth?: number
+  externalOnly?: boolean
+  teams?: boolean
+  sessionProjections?: { stateOf?: (session: unknown, key: string) => unknown }
+  routeCheck?: (config: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>
+  lifecycle?: Pick<Context, 'effect' | 'on'>
+  beforeStartActivation?: (request: Record<string, unknown>, childId: string) => void | Promise<void>
+  startFailure?: string
+}
+
+interface MockTool {
+  name: string
+  description: string
+  parameters: unknown
+  output: { render: (args: unknown, value: unknown) => { type: string, text: string }[] }
+  execute: (args: unknown, exec: unknown) => Promise<unknown>
 }
 
 export interface MockHost {
   web: MockWeb
-  tools: Map<string, { name: string; execute: (args: never, exec: never) => Promise<unknown> }>
+  tools: Map<string, MockTool>
   settings: MockSettings
-  /** Every `subagents.start(provider, request)` the plugin performed. */
   subagentStarts: Array<{ provider: string, request: Record<string, unknown>, signal?: unknown }>
-  /** Every dispose() the fake subagent runs performed (cancellation coverage). */
   subagentDisposes: string[]
-  /** Background jobs the fake registry started, with their live handles. */
-  jobStarts: Array<{
-    kind: string
-    label: string
-    owner: unknown
-    cancel: (reason?: string) => void
-    done: Promise<{ status: string, detail?: string }>
-  }>
-  /** Resolves a pending `activationHold` gate (no-op when none is pending). */
-  releaseActivation: () => void
-  /** Every scope passed to `tools.view(scope)` — must be the Agent object. */
-  toolViewScopes: unknown[]
+  command: Map<string, (invocation: unknown) => Promise<{ kind: string, text: string }>>
+  section: Map<string, (context: unknown) => string>
+  servicesRead: string[]
   /** The in-memory FsPort the plugin was given (assert files written here). */
   fs: MemFs
   /** DSH ≥0.1.7 SettingsForms double — populated and used when the host is
@@ -330,7 +316,8 @@ export function makeMemFs(initial: Record<string, string> = {}): MemFs {
       if (value === undefined) throw enoent()
       return Buffer.from(value, 'utf8')
     },
-    async writeFile(path, data) {
+    async writeFile(path, data, flag) {
+      if (flag === 'wx' && files.has(normalize(path))) throw Object.assign(new Error('EEXIST'), { code: 'EEXIST' })
       files.set(normalize(path), data)
     },
     async rename(from, to) {
@@ -364,19 +351,12 @@ export function makeMemFs(initial: Record<string, string> = {}): MemFs {
 export function makeHost(options: HostOptions = {}): MockHost {
   const web = makeWeb()
   const tools: MockHost['tools'] = new Map()
-  const knownTools = new Set(options.knownTools ?? [])
-  const restrictableTools = new Set(options.restrictableTools ?? options.knownTools ?? [])
   const settings = makeSettings(options)
   const subagentStarts: MockHost['subagentStarts'] = []
   const subagentDisposes: MockHost['subagentDisposes'] = []
-  const jobStarts: MockHost['jobStarts'] = []
-  let releaseActivationGate: (() => void) | undefined
-  const releaseActivation = (): void => {
-    const gate = releaseActivationGate
-    releaseActivationGate = undefined
-    gate?.()
-  }
-  const toolViewScopes: MockHost['toolViewScopes'] = []
+  const command: MockHost['command'] = new Map()
+  const section: MockHost['section'] = new Map()
+  const servicesRead: string[] = []
   /** The plugin registers TWO settings injects on ≥0.1.7 (seam +
    *  configEditor binding); the mock must fire ALL of them. */
   const settingsCbs: Array<(sctx: unknown) => void> = []
@@ -390,27 +370,14 @@ export function makeHost(options: HostOptions = {}): MockHost {
 
   const providerNames = options.subagentProviders ?? []
   const providers = new Map(providerNames.map((providerName) => [providerName, {
-    capabilities: {
-      ...(options.activationApi === true
-        ? { depthLimit: true, agentPreset: true, agentOptions: true, outputSchema: true }
-        : { depthLimit: true, persona: true, toolFilter: true }),
-      ...options.providerCapabilities,
-    },
-    prepareContinuable: () => Promise.resolve({}),
-    start: (name: string, request: Record<string, unknown>) => {
-      subagentStarts.push({ provider: name, request })
-      return {
-        id: 'fake-run',
-        result: Promise.resolve({ stopReason: 'completed', output: [{ type: 'text', text: 'fake child reply' }] }),
-        dispose: () => {
-          subagentDisposes.push('run')
-          return Promise.resolve()
-        },
-      }
-    },
+    capabilities: { depthLimit: true, agentOptions: true, ...options.providerCapabilities },
+    inheritsParentContext: options.inheritingProviders?.includes(providerName) ?? false,
+    ...(options.externalOnly ? {} : { prepareContinuable: () => Promise.resolve({}) }),
   }]))
 
   const ctx = {
+    effect: options.lifecycle?.effect.bind(options.lifecycle),
+    on: options.lifecycle?.on.bind(options.lifecycle),
     inject(deps: string[], cb: (ictx: unknown) => void): void {
       if (deps.includes('settings')) {
         settingsCbs.push(cb)
@@ -421,82 +388,44 @@ export function makeHost(options: HostOptions = {}): MockHost {
       }
     },
     tools: {
-      register: (tool: { name: string; execute: (args: never, exec: never) => Promise<unknown> }) => {
-        tools.set(tool.name, tool)
-      },
-      // Visible catalog: tests only need "this name is visible / not visible".
-      get: (name: string, _scope?: unknown) => (knownTools.has(name) ? { name } : undefined),
-      // restrictableNames: the set restrict() admits for a scope.
-      ...(options.noToolView === true
-        ? {}
-        : {
-            view: (scope?: unknown) => {
-              toolViewScopes.push(scope)
-              return { restrictableNames: restrictableTools }
-            },
-          }),
+      register: (tool: MockTool) => tools.set(tool.name, tool),
+      get: (name: string) => tools.get(name),
     },
-    systemPrompt: { section: () => {} },
+    systemPrompt: {
+      section: (spec: { name: string, text: (context: unknown) => string }) => section.set(spec.name, spec.text),
+    },
     subagents: {
       getProvider: (name: string) => providers.get(name),
       list: () => providerNames,
-      // Service-level entry points: old hosts use start()/startContinuable();
-      // DSH ≥0.2.1 uses startActivation(). The fakes record signals and
-      // dispose calls so cancellation behavior is assertable.
-      ...(options.activationApi === true
-        ? {
-            startActivation: (spec: { provider: string, label: string, request: Record<string, unknown>, delivery: string, signal: AbortSignal }) => {
-              subagentStarts.push({ provider: spec.provider, request: { ...spec.request, label: spec.label, delivery: spec.delivery }, signal: spec.signal })
-              const settle = () => ({
-                childId: 'fake-child',
-                result: options.activationNeverSettles === true
-                  ? new Promise<never>(() => { /* never settles: foreground abort race */ })
-                  : Promise.resolve({ stopReason: 'completed', output: [{ type: 'text', text: 'fake child reply' }] }),
-                dispose: () => {
-                  subagentDisposes.push('activation')
-                  return Promise.resolve()
-                },
-              })
-              if (options.activationHold !== true) return settle()
-              return new Promise((resolve) => {
-                releaseActivationGate = () => resolve(settle())
-              })
-            },
+      resolveMaxDepth: () => options.hostMaxDepth ?? 1,
+      ...(options.activationApi === false ? {} : {
+        namesOf() {},
+        resolveName() {},
+        async startActivation(spec: Record<string, unknown>) {
+          subagentStarts.push({ provider: String(spec.provider), request: spec, signal: spec.signal })
+          if (options.startFailure) throw new Error(options.startFailure)
+          const index = subagentStarts.length
+          const childId = typeof spec.childId === 'string' ? spec.childId : `child-${index}`
+          await options.beforeStartActivation?.(spec, childId)
+          return {
+            name: `agent-${index}`, childId,
+            get result(): never { throw new Error('The caller accessed a running child result.') },
+            dispose: () => subagentDisposes.push(childId),
           }
-        : {
-            start: (name: string, request: Record<string, unknown>) => {
-              const provider = providers.get(name)
-              if (provider === undefined) throw new Error(`fake subagents: no provider "${name}"`)
-              return provider.start(name, request)
-            },
-            startContinuable: (spec: { provider: string, label: string, request: Record<string, unknown> }) => {
-              const provider = providers.get(spec.provider)
-              if (provider === undefined) throw new Error(`fake subagents: no provider "${spec.provider}"`)
-              subagentStarts.push({ provider: spec.provider, request: spec.request })
-              return Promise.resolve({ childId: 'fake-child' })
-            },
-          }),
+        },
+      }),
     },
     get: (name: string) => {
-      if (name === 'profileContext' && options.profileName !== undefined) return { name: options.profileName }
-      if (name === 'llm' && options.llmProviders !== undefined) {
-        return { listProviders: () => options.llmProviders?.map((id) => ({ id, name: id })) ?? [] }
+      servicesRead.push(name)
+      if (name === 'commands') return {
+        register: (spec: { name: string, handler: (input: unknown) => Promise<{ kind: string, text: string }> }) => command.set(spec.name, spec.handler),
       }
-      if (name === 'jobs' && options.jobs === true) {
-        return {
-          start: (spec: { kind: string, label: string, owner: unknown, run: () => { cancel: (reason?: string) => void, done: Promise<unknown> } }) => {
-            const handle = spec.run()
-            jobStarts.push({
-              kind: spec.kind,
-              label: spec.label,
-              owner: spec.owner,
-              cancel: handle.cancel,
-              done: handle.done as Promise<{ status: string, detail?: string }>,
-            })
-            void handle.done.catch(() => { /* the test awaits done explicitly */ })
-            return `job-${jobStarts.length}`
-          },
-        }
+      if (name === 'agentTeam' && options.teams) return {}
+      if (name === 'profileContext' && options.profileName !== undefined) return { name: options.profileName }
+      if (name === 'sessionProjections') return options.sessionProjections
+      if (name === 'llm') return {
+        ...(options.llmProviders === undefined ? {} : { listProviders: () => options.llmProviders!.map(id => ({ id, name: id })) }),
+        resolveCallConfig: options.routeCheck ?? (async () => ({})),
       }
       return undefined
     },
@@ -516,7 +445,7 @@ export function makeHost(options: HostOptions = {}): MockHost {
     : { settings, effect: (fn: () => unknown) => fn() }
   for (const cb of settingsCbs) cb(sctxFor)
 
-  return { web, tools, settings, forms, applyConfig, subagentStarts, subagentDisposes, jobStarts, releaseActivation, toolViewScopes, fs }
+  return { web, tools, settings, forms, applyConfig, subagentStarts, subagentDisposes, command, section, servicesRead, fs }
 }
 
 export interface ReqOptions {

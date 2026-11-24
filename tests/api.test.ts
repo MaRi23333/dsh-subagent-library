@@ -10,12 +10,92 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { API_PATH, dispatch, jsonBody, makeHost, postJson, type MockHost } from './helpers.ts'
 import { parse as parseYaml } from 'yaml'
+import { routeBinding } from '../src/profile-route.ts'
 
 const ENTRY = { description: 'fake role for tests' }
 
 function hostWith(options: Parameters<typeof makeHost>[0] = {}): MockHost {
   return makeHost({ baseEntries: { 'good-entry': { ...ENTRY } }, ...options })
 }
+
+for (const profileName of [undefined, 'desktop', 'unsafe.']) {
+  test(`catalog, group detail, delegation and settings GET perform no filesystem writes (${profileName ?? 'no profile'})`, async t => {
+    const host = makeHost({
+      profileName,
+      subagentProviders: ['spawn'],
+      baseEntries: { reader: { description: 'already migrated' } },
+      rosterFiles: {
+        '/roster/reader.yaml': 'description: reader\n',
+        '/roster/_profiles/desktop/reader.yaml': 'inherit: true\n',
+        '/roster/_groups/editors.yaml': 'description: editors\nmembers:\n  - slot: reviewer\n    role: reader\n',
+      },
+    })
+    const writes = (['mkdir', 'writeFile', 'rename', 'unlink'] as const).map(op => t.mock.method(host.fs, op))
+    const exec = { agent: { id: 'parent' }, signal: new AbortController().signal }
+    const list = host.tools.get('list_subagents')!
+    await list.execute({}, exec)
+    await list.execute({ kind: 'groups' }, exec)
+    await list.execute({ group_id: 'editors' }, exec)
+    await host.tools.get('delegate')!.execute({ group_id: 'editors', slot: 'reviewer', prompt: 'read' }, exec)
+    assert.equal(host.subagentStarts.length, 1)
+    assert.equal((await dispatch(host.web, API_PATH)).status, 200)
+    for (const write of writes) assert.equal(write.mock.callCount(), 0)
+  })
+}
+
+test('maintenance rechecks missing roles, orphan overlays and stale bindings after acquiring the lock', async () => {
+  const host = makeHost({
+    profileName: 'desktop',
+    baseEntries: { legacy: { description: 'old settings' } },
+    rosterFiles: {
+      '/roster/reader.yaml': 'description: reader\n',
+      '/roster/_profiles/desktop/reader.yaml': 'model: outdated\nboundHash: deadbeefdeadbeef\n',
+      '/roster/_profiles/other/revived.yaml': 'inherit: true\n',
+      '/roster/_profiles/other/gone.yaml': 'inherit: true\n',
+    },
+  })
+  const binding = routeBinding({ description: 'reader' })
+  const newOverlay = `model: updated\nboundHash: ${binding}\n`
+  const write = host.fs.writeFile.bind(host.fs)
+  let locks = 0
+  host.fs.writeFile = async (file, data, flag) => {
+    if (flag === 'wx') {
+      locks++
+      await write('/roster/legacy.yaml', 'description: concurrent migration\n')
+      await write('/roster/revived.yaml', 'description: concurrent creation\n')
+      await write('/roster/_profiles/desktop/reader.yaml', newOverlay)
+    }
+    await write(file, data, flag)
+  }
+  const res = await dispatch(host.web, API_PATH)
+  assert.equal(res.status, 200, res.body)
+  const files = host.fs.files()
+  assert.equal(files['/roster/legacy.yaml'], 'description: concurrent migration\n')
+  assert.equal(files['/roster/_profiles/desktop/reader.yaml'], newOverlay)
+  assert.equal(files['/roster/_profiles/other/revived.yaml'], 'inherit: true\n')
+  assert.equal(files['/roster/_profiles/other/gone.yaml'], undefined)
+  assert.equal((await dispatch(host.web, API_PATH)).status, 200)
+  assert.equal(locks, 1)
+})
+
+test('a busy directory serves an ignored stale binding and cleans it when the writer leaves', async () => {
+  const lock = '/roster/.roster-write.lock'
+  const overlay = '/roster/_profiles/desktop/reader.yaml'
+  const host = makeHost({ profileName: 'desktop', rosterFiles: {
+    [lock]: 'another host',
+    '/roster/reader.yaml': 'description: reader\nmodel: current\n',
+    [overlay]: 'model: stale\nboundHash: deadbeefdeadbeef\n',
+  } })
+  const busy = await dispatch(host.web, API_PATH)
+  assert.equal(busy.status, 200)
+  const entries = jsonBody(busy)['entries'] as Record<string, { model: string }>
+  assert.equal(entries.reader.model, 'current')
+  assert.ok(host.fs.files()[overlay])
+  assert.equal(host.fs.files()[lock], 'another host')
+  await host.fs.unlink(lock)
+  assert.equal((await dispatch(host.web, API_PATH)).status, 200)
+  assert.equal(host.fs.files()[overlay], undefined)
+})
 
 test('GET returns the roster view and filters schema-invalid legacy ids out', async () => {
   // A hand-written key like `bad_key` passes z.dict but violates ENTRY_ID;
@@ -540,4 +620,138 @@ test('unsupported methods get 405', async () => {
   const res = await dispatch(host.web, API_PATH, { method: 'PUT', headers: { host: '127.0.0.1:3080' } })
   assert.equal(res.status, 405)
   assert.equal(jsonBody(res)['error'], 'method-not-allowed')
+})
+
+const workerGroup = { description: 'Two tasks', members: [
+  { slot: 'first', role: 'worker', assignment: 'Review' }, { slot: 'second', role: 'worker' },
+] }
+const openView = async (host: MockHost) => jsonBody(await dispatch(host.web, API_PATH))
+const writeCurrent = async (host: MockHost, payload: Record<string, unknown>) =>
+  postJson(host.web, { expectedHash: (await openView(host)).hash, ...payload })
+
+test('group writes require versions, preserve slot order and never rewrite role files', async () => {
+  const worker = '# hand written\ndescription: worker\n'
+  const host = makeHost({ rosterFiles: { '/roster/worker.yaml': worker }, subagentProviders: ['spawn'] })
+  for (const op of ['save-group', 'delete-group', 'save-entry']) {
+    const response = await postJson(host.web, { op, id: 'crew' })
+    assert.equal(response.status, 400)
+    assert.equal(jsonBody(response).error, 'expected-hash-required')
+  }
+  const saved = await writeCurrent(host, { op: 'save-group', id: 'crew', group: workerGroup })
+  assert.equal(saved.status, 200, saved.body)
+  const view = jsonBody(saved)
+  const group = (view.groups as Record<string, typeof workerGroup>).crew
+  assert.deepEqual(group.members, workerGroup.members.map(m => ({ ...m, launchable: true })))
+  assert.deepEqual(view.roleUsages, { worker: [{ groupId: 'crew', slot: 'first' }, { groupId: 'crew', slot: 'second' }] })
+  assert.deepEqual(parseYaml(host.fs.files()['/roster/_groups/crew.yaml']), workerGroup)
+  const echoed = await writeCurrent(host, { op: 'save-group', id: 'crew', group })
+  assert.equal(echoed.status, 200, echoed.body)
+  assert.deepEqual(parseYaml(host.fs.files()['/roster/_groups/crew.yaml']), workerGroup)
+  const removed = await writeCurrent(host, { op: 'delete-group', id: 'crew' })
+  assert.equal(removed.status, 200)
+  assert.deepEqual(host.fs.files(), { '/roster/worker.yaml': worker })
+})
+
+test('disabled groups protect direct and snapshot deletes before any row is written', async () => {
+  const host = makeHost({ rosterFiles: { '/roster/worker.yaml': 'description: worker\n' } })
+  await writeCurrent(host, { op: 'save-group', id: 'crew', group: { ...workerGroup, enabled: false } })
+  const files = host.fs.files()
+  for (const body of [{ op: 'save', entries: { fresh: ENTRY } }, { op: 'delete', id: 'worker' }]) {
+    const res = await postJson(host.web, body)
+    assert.equal(res.status, 409)
+    assert.equal(jsonBody(res).error, 'role-in-use')
+    assert.deepEqual(jsonBody(res).references, [{ groupId: 'crew', slot: 'first' }, { groupId: 'crew', slot: 'second' }])
+    assert.ok(jsonBody(res).view)
+    assert.deepEqual(host.fs.files(), files)
+  }
+  assert.equal((await writeCurrent(host, { op: 'save-entry', id: 'worker', entry: { ...ENTRY, enabled: false } })).status, 200)
+})
+
+test('new references must exist; a remaining dangling slot stays editable', async () => {
+  const host = makeHost({ rosterFiles: { '/roster/worker.yaml': 'description: worker\n' } })
+  const invalid = await writeCurrent(host, { op: 'save-group', id: 'crew', group: { ...workerGroup, members: [{ slot: 'x', role: 'missing' }] } })
+  assert.equal(invalid.status, 400)
+  assert.equal(jsonBody(invalid).error, 'invalid-reference')
+  await writeCurrent(host, { op: 'save-group', id: 'crew', group: workerGroup })
+  await host.fs.unlink('/roster/worker.yaml')
+  const repaired = await writeCurrent(host, { op: 'save-group', id: 'crew', group: { ...workerGroup, members: [workerGroup.members[1]] } })
+  assert.equal(repaired.status, 200)
+  const result = jsonBody(repaired).groups as Record<string, {members: {launchable: boolean, reason: string}[]}>
+  assert.equal(result.crew.members[0].launchable, false)
+  assert.match(result.crew.members[0].reason, /worker/)
+})
+
+test('unreadable groups and broken roles with legacy copies block destructive updates', async () => {
+  const host = makeHost({ baseEntries: { damaged: ENTRY }, rosterFiles: {
+    '/roster/_groups/crew.yaml': 'bad: [\n', '/roster/worker.yaml': 'description: worker\n',
+    '/roster/damaged.yaml': 'bad: [\n', '/roster/_profiles/desktop/damaged.yaml': 'provider: saved\n',
+  } })
+  const view = await openView(host)
+  const files = host.fs.files()
+  assert.equal((view.entries as Record<string, {launchable: boolean}>).damaged.launchable, false)
+  for (const body of [
+    { op: 'delete', id: 'worker' }, { op: 'save', entries: { fresh: ENTRY } },
+    { op: 'save-group', id: 'crew', group: workerGroup },
+    { op: 'save-group', id: 'other', group: { ...workerGroup, members: [{ slot: 'x', role: 'damaged' }] } },
+    { op: 'save-entry', id: 'damaged', entry: ENTRY },
+  ]) {
+    const res = await postJson(host.web, { ...body, expectedHash: view.hash })
+    assert.equal(res.status, 503, res.body)
+    assert.equal(jsonBody(res).error, 'references-unreadable')
+    assert.deepEqual(host.fs.files(), files)
+  }
+})
+
+test('role edits preserve old mode and tool scope until explicitly cleared', async () => {
+  const host = makeHost({ rosterFiles: {
+    '/roster/worker.yaml': 'description: saved\ntoolFilter:\n  deny: [edit]\nbackgroundMode: continuable\n',
+  } })
+  const files = host.fs.files()
+  const rejected = await postJson(host.web, { op: 'save', entries: { first: ENTRY, worker: ENTRY } })
+  assert.equal(rejected.status, 409)
+  assert.equal(jsonBody(rejected).error, 'tool-filter-protected')
+  assert.deepEqual(host.fs.files(), files)
+  const saved = await writeCurrent(host, { op: 'save-entry', id: 'worker', entry: ENTRY })
+  assert.equal(saved.status, 200, saved.body)
+  assert.deepEqual(parseYaml(host.fs.files()['/roster/worker.yaml']), { ...ENTRY, backgroundMode: 'continuable', toolFilter: { deny: ['edit'] } })
+  const cleared = await writeCurrent(host, { op: 'save-entry', id: 'worker', entry: ENTRY, clearToolFilter: true })
+  assert.equal(cleared.status, 200)
+  assert.equal(parseYaml(host.fs.files()['/roster/worker.yaml']).toolFilter, undefined)
+})
+
+test('explicit inherit pins only this profile and conflicted edits include a fresh view', async () => {
+  const shared = '# hand edited\ndescription: worker\nprovider: other\n'
+  const host = makeHost({ profileName: 'desktop', rosterFiles: { '/roster/worker.yaml': shared } })
+  const before = await openView(host)
+  await host.fs.writeFile('/roster/_profiles/web/worker.yaml', 'provider: another\n')
+  const pin = await postJson(host.web, { op: 'save-entry', id: 'worker', expectedHash: before.hash, entry: { description: 'worker' }, route: { inherit: true } })
+  assert.equal(pin.status, 200, pin.body)
+  const overlay = host.fs.files()['/roster/_profiles/desktop/worker.yaml']
+  assert.equal(parseYaml(overlay).inherit, true)
+  assert.equal(host.fs.files()['/roster/worker.yaml'], shared)
+  const renamed = await writeCurrent(host, { op: 'save-entry', id: 'worker', entry: { description: 'new', provider: 'echo' } })
+  assert.equal(renamed.status, 200)
+  assert.equal(host.fs.files()['/roster/_profiles/desktop/worker.yaml'], overlay)
+  assert.equal(parseYaml(host.fs.files()['/roster/worker.yaml']).provider, 'other')
+  await host.fs.writeFile('/roster/_profiles/desktop/worker.yaml', 'provider: 9\n')
+  const stale = await postJson(host.web, { op: 'save-entry', id: 'worker', entry: ENTRY, expectedHash: jsonBody(renamed).hash })
+  assert.equal(stale.status, 409)
+  const broken = (jsonBody(stale).view as Record<string, unknown>).hash
+  await host.fs.writeFile('/roster/_profiles/desktop/worker.yaml', 'provider: 8\n')
+  assert.notEqual((await openView(host)).hash, broken)
+})
+
+test('two plugin instances sharing a directory serialize concurrent group creation and role deletion', async () => {
+  const a = makeHost({ rosterFiles: { '/roster/worker.yaml': 'description: initial\n' } })
+  const b = makeHost()
+  Object.assign(b.fs, a.fs)
+  const expectedHash = (await openView(a)).hash
+  const result = await Promise.all([
+    postJson(a.web, { op: 'save-group', id: 'crew', group: workerGroup, expectedHash }),
+    postJson(b.web, { op: 'delete', id: 'worker', expectedHash }),
+  ])
+  assert.deepEqual(result.map(r => r.status).sort(), [200, 409])
+  const files = a.fs.files()
+  if (files['/roster/_groups/crew.yaml']) assert.ok(files['/roster/worker.yaml'])
+  assert.equal(files['/roster/.roster-write.lock'], undefined)
 })
