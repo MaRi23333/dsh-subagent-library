@@ -62,6 +62,8 @@ const expected = [
   'README.en.md',
   'README.md',
   'THIRD_PARTY_NOTICES.md',
+  'assets/readme/group-dispatch.png',
+  'assets/readme/group-settings.png',
   'assets/readme/hero.svg',
   'assets/readme/screenshot-command-palette.png',
   'assets/readme/screenshot-roster.png',

@@ -12,11 +12,17 @@
   <img src="https://img.shields.io/badge/DeepSeek%20Harness-0.2.2--rc.5-4d6bfe?style=flat-square" alt="DeepSeek Harness 0.2.2-rc.5" />
 </p>
 
-## Overview
+## Save a group for work you do often
 
-Save the roles you use often in DeepSeek Harness Desktop or Web. For example, create a role called “Code reviewer”, choose its model and prompt, then say “Ask Code reviewer to check these changes.” Groups let you reference those same roles by slot and give each slot its own assignment.
+When you review an announcement, you might want one assistant to spot missing details and another to suggest a rewrite. Save those roles, their assignments, and any shared instructions as a group. The next time you have an announcement, give it to the main agent and ask for that group by name.
 
-**Groups work with Agent Teams switched off.** Each delegation starts one native child and returns its host-assigned name. The parent can dispatch independent assignments in the same turn with one call per member. It can wait for a member's findings when another assignment depends on them. The host delivers each completion to the online parent. Enabling Agent Teams also gives the tree access to the official shared task board.
+> Ask the review group to look at “The meeting has moved to Friday afternoon.” Have `grok-reviewer` use its default model to flag missing information. For this task, have `glm-adversary` use DeepSeek Flash to suggest a one-sentence rewrite.
+
+![Two members dispatched in the same turn. Grok 4.7 flags the missing start time. The other role uses DeepSeek Flash for this dispatch and suggests a rewrite.](./assets/readme/group-dispatch.png)
+
+**Choose a model for one assignment.** Whether you name a role directly or pick a member from a group, you can ask for a model authorized in the current session. The role keeps its usual model for future dispatches.
+
+Groups work with Agent Teams switched off. The main agent dispatches one member per call. It can start independent assignments in the same turn or wait for one member’s findings and pass them to the next. Enabling Agent Teams also gives members access to the host’s shared task board.
 
 Version 0.4.0 targets DSH `0.2.2-rc.5` and requires native subagents that can be addressed by name for follow-up messages. To upgrade from an earlier version, see the [migration guide](./MIGRATION.md) and [changelog](./CHANGELOG.md).
 
@@ -91,7 +97,11 @@ Ask the main agent to call `list_subagents()`, then `delegate({library_id:"text-
 
 ## Groups and slots
 
-Open the Groups tab, create a group with an ID and description, then select a role and give each member a unique code. A role can appear more than once, with a different assignment for each member. Save the group to make it available for dispatch. The equivalent file is `_groups/text-review.yaml` under the roster directory. The YAML field `slot` holds the member code.
+Open the Groups tab, create a group with an ID and description, then select a role and give each member a unique code. A role can appear more than once, with a different assignment for each member. Save the group to make it available for dispatch.
+
+![The Groups tab in Settings shows an enabled two-member review group.](./assets/readme/group-settings.png)
+
+To define the `facts` and `questions` example in YAML, use `_groups/text-review.yaml` under the roster directory. The YAML field `slot` holds the member code.
 
 ```yaml
 description: Extract facts and open questions from supplied material.

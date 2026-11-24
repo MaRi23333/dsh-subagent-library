@@ -1,0 +1,2 @@
+src/**/*.ts text eol=lf
+src/**/*.tsx text eol=lf
