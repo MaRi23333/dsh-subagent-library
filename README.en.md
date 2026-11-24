@@ -12,17 +12,25 @@
   <img src="https://img.shields.io/badge/DeepSeek%20Harness-0.2.2--rc.5-4d6bfe?style=flat-square" alt="DeepSeek Harness 0.2.2-rc.5" />
 </p>
 
-## Save a group for work you do often
+## Subagent Library
 
-When you review an announcement, you might want one assistant to spot missing details and another to suggest a rewrite. Save those roles, their assignments, and any shared instructions as a group. The next time you have an announcement, give it to the main agent and ask for that group by name.
+Keep the assistants you use regularly in a named roster for DeepSeek Harness. Give each role a name, a description, and a prompt. Choose its usual model and reasoning effort, or let it follow the main conversation. Once a role is saved, you can ask for it by name in Desktop or Web.
 
-> Ask the review group to look at “The meeting has moved to Friday afternoon.” Have `grok-reviewer` use its default model to flag missing information. For this task, have `glm-adversary` use DeepSeek Flash to suggest a one-sentence rewrite.
+For example, the roster below has an enabled role named `glm-adversary`. In the main conversation, you could ask:
 
-![Two members dispatched in the same turn. Grok 4.7 flags the missing start time. The other role uses DeepSeek Flash for this dispatch and suggests a rewrite.](./assets/readme/group-dispatch.png)
+> Ask `glm-adversary` to review this launch plan and flag the two assumptions we should check first.
 
-**Choose a model for one assignment.** Whether you name a role directly or pick a member from a group, you can ask for a model authorized in the current session. The role keeps its usual model for future dispatches.
+The main agent uses `list_subagents` to find a saved role and `delegate` to give it the task. The role starts as a native DSH subagent. It reports back when it finishes, and you can send it follow-up questions.
 
-Groups work with Agent Teams switched off. The main agent dispatches one member per call. It can start independent assignments in the same turn or wait for one member’s findings and pass them to the next. Enabling Agent Teams also gives members access to the host’s shared task board.
+![The role roster in DSH Desktop. Each card shows the role’s name, assignment, model, and enabled state.](./assets/readme/screenshot-settings.png)
+
+[Install](#install) · [Your first delegation](#your-first-delegation) · [Switch models for one task](#switch-models-for-one-task) · [Optional groups](#groups-and-slots) · [Configuration and migration](#configuration-and-migration)
+
+## Manage your roster
+
+In **Settings → Subagent Library → Role roster**, filter by role ID, description, or model. Expand a card to edit its prompt, default model, and reasoning effort. Disable a role to set it aside and enable it again when you need it.
+
+Each role has its own YAML file under `~/.dsh/subagents/` by default. Create roles in Settings, edit the files yourself, or ask a main agent with write access to that directory to configure one for you. Saved changes take effect on the next lookup or dispatch. Desktop and Web profiles can use different models for the same role.
 
 Version 0.4.0 targets DSH `0.2.2-rc.5` and requires native subagents that can be addressed by name for follow-up messages. To upgrade from an earlier version, see the [migration guide](./MIGRATION.md) and [changelog](./CHANGELOG.md).
 
@@ -86,22 +94,50 @@ dsh plugin --profile web add /absolute/path/to/dsh-subagent-library
 
 ## Your first delegation
 
-Open the Subagent Library in Settings, switch to the role roster, and create a role with ID `text-helper` and a description. Leave the route empty to use the session model. You can also create the equivalent `text-helper.yaml` in the roster directory (default `~/.dsh/subagents/`).
+1. Open **Settings → Subagent Library → Role roster → New role**. Enter `text-helper` as the ID and “Organize short passages from the main conversation” as the description. Leave the model empty to follow the main conversation, then save.
+2. In the conversation, ask: “Have `text-helper` turn apple, banana, and pear into a numbered list, in that order. Send me its result.”
+3. The start receipt from `delegate` gives you the member’s name. Once it reports back, you can ask the same member to put the list on one line.
+
+Type `/subagent` in the command palette to browse your saved roles. The host’s `list_agents` tool shows members that have already been started.
+
+<details>
+<summary>Create a role with YAML or troubleshoot your first dispatch</summary>
+
+To create the same role from a file, save `text-helper.yaml` in the roster directory. The filename sets the ID, the main agent sees the description, and the child receives the persona with its assignment.
 
 ```yaml
-description: Organize text supplied by the parent.
+description: Organize short passages from the main conversation.
 persona: Preserve proper names from the source.
 ```
 
-Ask the main agent to call `list_subagents()`, then `delegate({library_id:"text-helper", prompt:"Number apple, banana and pear in their original order."})`. The receipt's `name` addresses the native member. The parent receives the result separately. You can also manage roles in Settings.
+If a role is missing, refresh the roster and check that the role is enabled. If the main agent cannot see `list_subagents` or `delegate`, check that the plugin is enabled for the Desktop or Web instance you are using and that the session can access both tools. For a first test, leave the role model empty and use the working model from the main conversation.
+
+</details>
+
+## Switch models for one task
+
+Suppose `text-helper` usually follows the main model, but you want a second take today. Ask: “Have `text-helper` use DeepSeek Flash to edit this paragraph.” You can choose a model authorized in the current session for a single role or a group member. The next ordinary dispatch uses the saved role settings.
+
+In the DSH sidebar, open **Plugins → built-in Subagent configuration → Model selection**. Enable agent model selection, select the allowed models, save, and start a new session. The main agent can call `list_subagent_models` to see the choices, pass `provider` and `model` to `delegate`, and optionally set `reasoning_effort`.
+
+In a session without a recorded allowlist, an explicit selection is limited to the current parent provider and model. On a host that cannot read authorization, dispatch with the saved role settings remains available. Agent Teams is optional.
 
 ## Groups and slots
 
-Open the Groups tab, create a group with an ID and description, then select a role and give each member a unique code. A role can appear more than once, with a different assignment for each member. Save the group to make it available for dispatch.
+Some tasks call for the same people each time. To review an announcement, you might want one person to flag missing information and another to suggest a rewrite. Open **Settings → Subagent Library → Groups → New group**, select existing roles, and save their individual assignments and any shared instructions. Next time, ask for the group by name.
 
-![The Groups tab in Settings shows an enabled two-member review group.](./assets/readme/group-settings.png)
+![An enabled two-member review group in Settings.](./assets/readme/group-settings.png)
 
-To define the `facts` and `questions` example in YAML, use `_groups/text-review.yaml` under the roster directory. The YAML field `slot` holds the member code.
+In the conversation below, the main agent dispatches two members in the same turn. `grok-reviewer` uses its usual model to spot the missing start time. For this task, `glm-adversary` uses DeepSeek Flash to suggest a rewrite.
+
+![Two review assignments in the same turn, with the first role on its default model and the second on DeepSeek Flash.](./assets/readme/group-dispatch.png)
+
+Each `delegate` call starts one member. Independent assignments can start in the same turn. If an assignment depends on an earlier finding, the main agent can wait for that member to report back. Groups work with Agent Teams off. Turning it on also enables the host’s shared task board.
+
+<details>
+<summary>Group YAML example and tool calls</summary>
+
+This `text-review` example reuses the `text-helper` role created above. The `facts` and `questions` slots give that role different assignments. Save it as `_groups/text-review.yaml` under the roster directory.
 
 ```yaml
 description: Extract facts and open questions from supplied material.
@@ -125,9 +161,7 @@ Browsing starts zero agents. The `questions` slot starts only on a separate call
 
 Use `/subagent groups text-review` to see which members have a configured model and which inherit the parent model. A role can inherit the model and set its own reasoning effort. After dispatch, the native subagent menu and `list_agents` show the launch model and known effort in the member description, for example `text-review/facts [model-a · high]`. Expand the `delegate` receipt for the full `provider`, `model` and `reasoningEffort` values when available.
 
-To change the model for one dispatch, open Plugins in the DSH sidebar, open the built-in Subagent configuration and enable Model selection. Select the allowed models, save, and start a new parent session. Ask the parent to use the role default for one member and an authorized model for the other. It can discover choices with the native `list_subagent_models` tool and pass both `provider` and `model` to `delegate`. The optional `reasoning_effort` selects an effort for that model. Omitting it uses the selected model's default. Subsequent dispatches use the saved role settings again.
-
-In a session without a recorded allowlist, an explicit selection is limited to the current parent provider and model. On a host that cannot read authorization, dispatch with the saved role settings remains available. Agent Teams is optional.
+</details>
 
 ## Configuration and migration
 
