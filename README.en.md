@@ -189,16 +189,6 @@ Configure the base directory and default transport on the plugin row of the curr
 
 Include the role files, `_profiles/` and `_groups/` in backups. The Settings endpoint `/subagent-library/api` shares the DSH Web Host access boundary. Configure host or reverse-proxy authentication when exposing it to other devices.
 
-## Development
-
-```sh
-pnpm install
-pnpm run typecheck
-pnpm run build   # host: lib/index.js; client: lib/client.js
-```
-
-- Dev dependencies remain pinned to DSH `0.1.0-rc.6` (see package.json devDependencies); this is not the current runtime host version. If the interfaces drift on other versions, adjust against the corresponding tag of the [deepseek-harness repo](https://github.com/deepseek-ai/deepseek-harness).
-
 ## License
 
 [Apache-2.0](./LICENSE). Third-party license notices for code inlined into the build artifacts are in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).

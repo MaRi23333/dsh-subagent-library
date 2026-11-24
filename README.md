@@ -188,16 +188,6 @@ members:
 
 备份时一起保留角色、`_profiles/` 和 `_groups/`。设置接口 `/subagent-library/api` 使用 DSH Web Host 的访问边界。将宿主开放给其他设备时，在宿主或反向代理配置访问控制。
 
-## 开发
-
-```sh
-pnpm install
-pnpm run typecheck
-pnpm run build   # host: lib/index.js；client: lib/client.js
-```
-
-- 开发依赖仍锁定 DSH `0.1.0-rc.6`（见 package.json devDependencies），不等于当前使用宿主版本。其他版本如接口漂移请对照 [deepseek-harness 仓库](https://github.com/deepseek-ai/deepseek-harness) 相应 tag 调整。
-
 ## License
 
 [Apache-2.0](./LICENSE)。本仓库内联构建产物的第三方许可证声明见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。
