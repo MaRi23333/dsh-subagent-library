@@ -65,6 +65,7 @@ const expected = [
   'assets/readme/group-dispatch.png',
   'assets/readme/group-settings.png',
   'assets/readme/hero.svg',
+  'assets/readme/member-model-effort.png',
   'assets/readme/screenshot-command-palette.png',
   'assets/readme/screenshot-roster.png',
   'assets/readme/screenshot-settings.png',

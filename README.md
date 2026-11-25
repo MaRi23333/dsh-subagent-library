@@ -34,6 +34,14 @@
 
 0.4.0 面向 DSH `0.2.2-rc.5`，需要宿主支持可按名称继续对话的原生子代理。从旧版升级请参阅[迁移指南](./MIGRATION.md)和[更新日志](./CHANGELOG.md)。
 
+## 查看子代理的模型和思考等级
+
+DSH 默认不会在子代理列表中标出模型和思考等级。用子代理库派遣角色后，展开对话顶部的成员列表，就能在角色名旁看到它这次启动用的模型。宿主提供思考等级时，也会一起显示。
+
+下图里，同一个 `glm-adversary` 派了两次：改写会议公告用的是 `deepseek-flash · high`，复核公告时间用的是 `glm-5.4 · max`。
+
+![DSH 成员列表，三次派遣分别显示 grok-4.7 · high、deepseek-flash · high 和 glm-5.4 · max。](./assets/readme/member-model-effort.png)
+
 ## 安装
 
 ### 桌面客户端（推荐）

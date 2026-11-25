@@ -34,6 +34,14 @@ Each role has its own YAML file under `~/.dsh/subagents/` by default. Create rol
 
 Version 0.4.0 targets DSH `0.2.2-rc.5` and requires native subagents that can be addressed by name for follow-up messages. To upgrade from an earlier version, see the [migration guide](./MIGRATION.md) and [changelog](./CHANGELOG.md).
 
+## See each subagent’s model and reasoning effort
+
+The DSH subagent list omits the model and reasoning effort by default. When you dispatch a role through Subagent Library, open the member list at the top of the conversation to see the model it started with. The reasoning effort appears alongside it when the host provides one.
+
+In the screenshot, the same `glm-adversary` role used `deepseek-flash · high` to rewrite a meeting announcement and `glm-5.4 · max` to double-check the meeting time.
+
+![The DSH member list shows three dispatches with grok-4.7 · high, deepseek-flash · high, and glm-5.4 · max.](./assets/readme/member-model-effort.png)
+
 ## Install
 
 ### Desktop client (recommended)
